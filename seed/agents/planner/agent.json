@@ -1,0 +1,13 @@
+{
+  "name": "planner",
+  "description": "Turns an intent into ordered steps, each with a brief and success checks. Reads and plans — it changes nothing.",
+  "kind": "worker",
+  "tools": [
+    "read_file",
+    "glob_files",
+    "search_contents",
+    "workspace_map",
+    "list_skills",
+    "load_skill"
+  ]
+}

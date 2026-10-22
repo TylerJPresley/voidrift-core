@@ -1,0 +1,27 @@
+{
+  "name": "vibe",
+  "description": "Runs autonomously: carries the plan-verify loop by delegating every change to workers. Asks a human only when truly blocked.",
+  "kind": "top-level",
+  "order": 30,
+  "label": "Vibe",
+  "unlisted": "allow",
+  "confirm": true,
+  "workers": "all",
+  "tools": [
+    "read_file",
+    "glob_files",
+    "search_contents",
+    "workspace_map",
+    "query_logs",
+    "list_skills",
+    "load_skill",
+    "web_fetch",
+    "web_search",
+    "wait",
+    "ingest",
+    "save_memory",
+    "list_memory",
+    "delete_memory",
+    "task"
+  ]
+}

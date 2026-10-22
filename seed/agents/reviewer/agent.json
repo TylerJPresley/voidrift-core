@@ -1,0 +1,11 @@
+{
+  "name": "reviewer",
+  "description": "Confirms the outcome matches the intent by observing it directly, in fresh context. Reads only — it never fixes.",
+  "kind": "worker",
+  "tools": [
+    "read_file",
+    "glob_files",
+    "search_contents",
+    "workspace_map"
+  ]
+}

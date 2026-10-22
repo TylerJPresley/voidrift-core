@@ -1,0 +1,19 @@
+{
+  "name": "research",
+  "description": "Orchestrator in research mode: a pure orchestrator that delegates investigation to read-only workers. Changes nothing.",
+  "kind": "top-level",
+  "order": 20,
+  "label": "Research",
+  "unlisted": "deny",
+  "workers": ["researcher", "planner", "reviewer"],
+  "tools": [
+    "task",
+    "researcher_save_notes",
+    "ingest",
+    "save_memory",
+    "list_memory",
+    "delete_memory",
+    "list_skills",
+    "load_skill"
+  ]
+}

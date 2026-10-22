@@ -1,0 +1,69 @@
+{
+  "name": "@voidrift/core",
+  "version": "0.1.0",
+  "description": "VoidRift core SDK — the headless, model- and environment-agnostic agentic engine.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "seed",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "manifest:update": "node scripts/update-shipped-hashes.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest --run",
+    "test:watch": "vitest",
+    "coverage": "vitest --run --coverage"
+  },
+  "dependencies": {
+    "@langchain/anthropic": "1.5.12",
+    "@langchain/core": "1.2.17",
+    "@langchain/google-genai": "2.3.2",
+    "@langchain/langgraph": "1.4.21",
+    "@langchain/langgraph-checkpoint": "1.1.6",
+    "@langchain/langgraph-checkpoint-postgres": "1.0.6",
+    "@langchain/langgraph-checkpoint-sqlite": "1.0.4",
+    "@langchain/langgraph-sdk": "1.12.3",
+    "@langchain/openai": "1.6.2",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@mozilla/readability": "0.6.0",
+    "@napi-rs/keyring": "2.1.0",
+    "better-sqlite3": "12.11.1",
+    "chokidar": "5.0.0",
+    "deepagents": "1.14.2",
+    "langchain": "1.5.16",
+    "langsmith": "0.9.0",
+    "linkedom": "0.18.13",
+    "liqe": "3.8.7",
+    "undici": "8.11.2",
+    "yaml": "2.9.1",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "26.6.5",
+    "@vitest/coverage-v8": "5.0.3",
+    "typescript": "5.9.3",
+    "vitest": "5.0.3"
+  },
+  "voidrift": {
+    "kind": "library"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TylerJPresley/voidrift-core.git"
+  }
+}

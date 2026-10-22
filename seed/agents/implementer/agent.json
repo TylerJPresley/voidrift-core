@@ -1,0 +1,14 @@
+{
+  "name": "implementer",
+  "description": "A general doer of one plan step with whatever the dispatch grants. Carries out the step, then reports what it did.",
+  "kind": "worker",
+  "tools": [
+    "read_file",
+    "glob_files",
+    "search_contents",
+    "workspace_map",
+    "write_file",
+    "edit_file",
+    "execute_command"
+  ]
+}

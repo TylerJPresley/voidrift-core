@@ -1,0 +1,16 @@
+{
+  "name": "researcher",
+  "description": "Gathers facts and checks conditions, then returns findings. Reads only — it changes nothing.",
+  "kind": "worker",
+  "tools": [
+    "read_file",
+    "glob_files",
+    "search_contents",
+    "workspace_map",
+    "web_fetch",
+    "web_search",
+    "list_skills",
+    "load_skill",
+    "researcher_save_notes"
+  ]
+}

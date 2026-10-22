@@ -1,0 +1,8 @@
+{
+  "name": "summarizer",
+  "description": "Summarizes a single line range of one source for a stated purpose, keeping names and numbers. Reads only — it changes nothing.",
+  "kind": "worker",
+  "tools": [
+    "read_file"
+  ]
+}
