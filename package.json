@@ -26,7 +26,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest --run",
     "test:watch": "vitest",
-    "coverage": "vitest --run --coverage"
+    "coverage": "vitest --run --coverage",
+    "lint": "eslint src"
   },
   "dependencies": {
     "@langchain/anthropic": "1.5.12",
@@ -57,7 +58,10 @@
     "@types/node": "26.6.5",
     "@vitest/coverage-v8": "5.0.3",
     "typescript": "5.9.3",
-    "vitest": "5.0.3"
+    "vitest": "5.0.3",
+    "eslint": "10.12.0",
+    "eslint-config-prettier": "10.1.8",
+    "typescript-eslint": "8.71.1"
   },
   "voidrift": {
     "kind": "library"
@@ -65,5 +69,19 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/TylerJPresley/voidrift-core.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TylerJPresley/voidrift-core/issues"
+  },
+  "homepage": "https://github.com/TylerJPresley/voidrift-core#readme",
+  "keywords": [
+    "voidrift",
+    "core",
+    "sdk",
+    "headless",
+    "model"
+  ],
+  "publishConfig": {
+    "access": "public"
   }
 }
