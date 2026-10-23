@@ -14,6 +14,28 @@ import { GIT_PRE, RM_BIN, ESC, SYS_PATH, ROOT_TARGET, CMD, PRE } from "../entiti
 import { NETWORK_TOOLS, validateCidr } from "../entities/exact-allow.js";
 import { LimitsSchema } from "./limits-schema.js";
 
+/**
+ * Generate a case-insensitive regex source for a literal string.
+ * Each ASCII letter becomes a two-char class [xX]; regex metacharacters are
+ * escaped. Used to build the git config key force-ask pattern without inline
+ * flag groups which fail on Node 22 and earlier (Node 24+ supports them).
+ * No global flag is applied; the surrounding pattern is deliberately case-sensitive
+ * on non-target elements (e.g. leading `git` or `core.`).
+ *
+ * Examples:
+ *   ciSource('core.sshcommand') → '[cC][oO][rR][eE]\\.[sS][sS][hH][cC][oO][mM][mM][aA][nN][dD]'
+ *   ciSource('protocol.ext.allow') → '[pP][rR]…\\.[eE][xX][tT]\\.[aA]…'
+ */
+export function ciSource(literal: string): string {
+  const REGEX_ESCAPES = new Set(".$^+*[](){}|\\".split(""));
+  return literal
+    .split("")
+    .map((c) =>
+      c.match(/[a-z]/i) ? `[${c.toLowerCase()}${c.toUpperCase()}]` : REGEX_ESCAPES.has(c) ? `\\${c}` : c,
+    )
+    .join("");
+}
+
 /** A model endpoint entry; unknown keys pass through to the client (§11.2, §11.3). */
 export const ModelConfigEntrySchema = z
   .object({
@@ -331,7 +353,7 @@ export const DEFAULT_SHELL_FORCE_ASK: string[] = [
   // config key that runs a command or changes transport (`core.sshCommand`,
   // `core.fsmonitor`, `core.hooksPath`, `core.pager`, `core.editor`,
   // `protocol.ext.allow`). `-c` may appear with other global options.
-  `${PRE}(?:\\S*/)?git(?: \\S+)* -c (?i:core\\.sshcommand|core\\.fsmonitor|core\\.hookspath|core\\.pager|core\\.editor|protocol\\.ext\\.allow)=\\S*(?: .*)?`,
+  `${PRE}(?:\\S*/)?git(?: \\S+)* -c (?:${ciSource("core.sshCommand")}|${ciSource("core.fsmonitor")}|${ciSource("core.hooksPath")}|${ciSource("core.pager")}|${ciSource("core.editor")}|${ciSource("protocol.ext.allow")})=\\S*(?: .*)?`,
   // `git clone|fetch|pull|push|ls-remote` carrying `--upload-pack=`/
   // `--receive-pack=`/`--exec=` (run a program on the remote/local side).
   `${GIT_PRE} (?:clone|fetch|pull|push|ls-remote)(?: \\S+)* (?:--upload-pack=|--receive-pack=|--exec=)\\S*(?: .*)?`,

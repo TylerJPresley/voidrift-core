@@ -91,7 +91,8 @@ describe("boot limits wiring — tools reach the injected LimitsCapability (§13
 
   it("a project limits.tools.commandOutputMaxBytes override truncates execute_command output and emits LIMIT_HIT", async () => {
     // echo a string far larger than the (tiny) configured cap.
-    const model = new OneCallModel({ name: "execute_command", args: { command: "printf 'x%.0s' {1..2000}" } });
+    // Use awk (POSIX-compatible) instead of bash brace expansion.
+    const model = new OneCallModel({ name: "execute_command", args: { command: "awk 'BEGIN{for(i=0;i<2000;i++)printf \"x\"}'" } });
     const { api } = await makeCore(model, baseSeed({ limits: { tools: { commandOutputMaxBytes: 50 } } } as unknown as Partial<Config>));
     const hits: { key: string; value: number }[] = [];
     api.events.subscribe("LIMIT_HIT", (e) => hits.push(e.payload as { key: string; value: number }));
