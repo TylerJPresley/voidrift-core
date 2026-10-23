@@ -36,9 +36,9 @@ describe("LimitsCapability", () => {
     expect(r1.first).toBe(true);
     expect(r2.first).toBe(false);
     expect(events.length).toBe(1);
-    expect(events[0].key).toBe("memory.projectChars");
-    expect(events[0].value).toBe(4000);
-    expect(events[0].area).toBe("memory");
+    expect(events[0]?.key).toBe("memory.projectChars");
+    expect(events[0]?.value).toBe(4000);
+    expect(events[0]?.area).toBe("memory");
   });
 
   it("emits and notices the key exactly as REGISTERED (canonical case), not the caller's spelling", () => {
@@ -52,7 +52,7 @@ describe("LimitsCapability", () => {
     // `voidrift: limit reached: context.metaBlockMaxTokens (…)` must not be
     // lower-cased.
     const r = limits.hit("context.metaBlockMaxTokens");
-    expect(events[0].key).toBe("context.metaBlockMaxTokens");
+    expect(events[0]?.key).toBe("context.metaBlockMaxTokens");
     expect(r.notice).toContain("limits.context.metaBlockMaxTokens");
     expect(r.notice).not.toContain("metablockmaxtokens");
   });

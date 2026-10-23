@@ -134,7 +134,7 @@ describe("protected-path classification (§9.4)", () => {
   it("classifies .voidrift/cache/ingest as DENY for model file writes", () => {
     const ctx = { workspaceRoot: ws, globalConfigDir: path.join(ws, "cfg"), home: ws };
     expect(classifyControlPath(path.join(ws, ".voidrift/cache/ingest/abc.json"), ctx)).toBe("deny");
-    expect(classifyControlPath(".voidrift/cache/ingest/abc.json", { ...ctx, workspaceRoot: undefined })).toBe("deny");
+    expect(classifyControlPath(".voidrift/cache/ingest/abc.json", { globalConfigDir: path.join(ws, "cfg"), home: ws })).toBe("deny");
   });
 });
 

@@ -40,8 +40,9 @@ describe("task tool — brief limit (task.briefMaxChars, TASK1)", () => {
     const dispatch = vi.fn(async () => fanout("merged", "ok"));
     const t = buildTaskTool({ workers, dispatch, limits });
     await invoke(t, { worker: "researcher", task: "short" });
-    const reqs = dispatch.mock.calls[0]![0] as { task: string }[];
-    expect(reqs[0]!.task).toBe("short");
+    const callArgs = dispatch.mock.calls[0];
+    const reqs = (callArgs && callArgs.length > 0 ? (callArgs as unknown[])[0] : undefined) as Array<{ task: string }> | undefined;
+    expect(reqs?.[0]?.task).toBe("short");
     expect(hits.length).toBe(0);
   });
 
@@ -50,9 +51,10 @@ describe("task tool — brief limit (task.briefMaxChars, TASK1)", () => {
     const dispatch = vi.fn(async () => fanout("merged", "ok"));
     const t = buildTaskTool({ workers, dispatch, limits });
     await invoke(t, { worker: "researcher", task: "x".repeat(200) });
-    const reqs = dispatch.mock.calls[0]![0] as { task: string }[];
-    expect(reqs[0]!.task).toContain("[truncated at limits.task.briefMaxChars");
-    expect(reqs[0]!.task.length).toBeLessThan(200);
+    const callArgs = dispatch.mock.calls[0];
+    const reqs = (callArgs && callArgs.length > 0 ? (callArgs as unknown[])[0] : undefined) as Array<{ task: string }> | undefined;
+    expect(reqs?.[0]?.task).toContain("[truncated at limits.task.briefMaxChars");
+    expect(reqs?.[0]?.task.length).toBeLessThan(200);
     expect(hits.filter((h) => h.key === "task.briefMaxChars").length).toBe(1);
   });
 });

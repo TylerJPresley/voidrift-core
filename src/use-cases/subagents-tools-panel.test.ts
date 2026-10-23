@@ -30,20 +30,37 @@ class NoVcs implements VcsPort {
   isRepo(): boolean {
     return false;
   }
-  async createWorktree(): Promise<Worktree> {
-    throw new Error("unused");
-  }
-  async removeWorktree(): Promise<void> {}
-  async mergeWorktree(): Promise<MergeResult> {
-    return { status: "clean", conflicts: [] };
-  }
   async currentBranch(): Promise<string> {
     return "main";
   }
+  async workingDiff(): Promise<string> {
+    return "";
+  }
+  async listFiles(): Promise<string[] | null> {
+    return [];
+  }
+  async createWorktree(): Promise<Worktree> {
+    throw new Error("unused");
+  }
+  async mergeWorktree(): Promise<MergeResult> {
+    return { merged: false };
+  }
+  async abandonWorktree(): Promise<string> {
+    return "recovery";
+  }
+  preserveWorktree(): string {
+    return "/path";
+  }
+  async removeWorktree(): Promise<void> {}
   async startBranchWatch(): Promise<void> {}
   async bootCleanup(): Promise<string[]> {
     return [];
   }
+  async removeWorktreesForSession(): Promise<{ reclaimedBytes: number; remainingRecoveryBranches: string[] }> {
+    return { reclaimedBytes: 0, remainingRecoveryBranches: [] };
+  }
+  async stopBranchWatch(): Promise<void> {}
+  ensureWorktreeDir(): void {}
 }
 
 function cfg(overrides: Partial<Config> = {}): Config {

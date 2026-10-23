@@ -51,8 +51,8 @@ describe("memory.projectChars exemplar", () => {
     const mem = new Memory(makeDeps(limits, files));
     await mem.projectContext();
     expect(hits.length).toBe(1);
-    expect(hits[0].key).toBe("memory.projectChars");
-    expect(hits[0].value).toBe(50);
+    expect(hits[0]?.key).toBe("memory.projectChars");
+    expect(hits[0]?.value).toBe(50);
   });
 
   it("does not emit when the merge fits", async () => {

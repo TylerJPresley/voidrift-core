@@ -51,6 +51,9 @@ class RealDirVcs implements VcsPort {
   async workingDiff(): Promise<string> {
     return "";
   }
+  async listFiles(): Promise<string[] | null> {
+    return [];
+  }
   async createWorktree(id: string): Promise<Worktree> {
     const p = path.join(this.root, "wt", id);
     fs.mkdirSync(p, { recursive: true });

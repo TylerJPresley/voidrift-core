@@ -25,7 +25,7 @@ function makeIngest(text: string, onRead?: () => Promise<never>): Ingest {
     readSource: onRead ? (onRead as never) : async () => ({ text, source: "f.md" }),
     dispatchSummarize: async (reqs) => ({
       fanoutId: "f",
-      workers: reqs.map((r) => ({ workerId: `w-${r.id}`, agent: r.agent, status: "merged" as const, summary: "S", ...(r.id ? { taskId: r.id } : {}) })),
+      workers: reqs.map((r) => ({ workerId: `w-${r.id}`, agent: r.agent, status: "merged" as const, summary: "S", pendingApproval: false, ...(r.id ? { taskId: r.id } : {}) })),
     }),
   });
 }

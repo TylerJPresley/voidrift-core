@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { Plugins, type CoreServices, type PluginGate } from "./plugins.js";
+import { Plugins, type PluginGate } from "./plugins.js";
 import type { PluginLoader } from "../adapters/plugin-loader.js";
 import type { PackageManifest } from "../entities/plugins/plugin-meta.js";
 import type {
@@ -12,25 +12,14 @@ import type {
 import { RegistryStore } from "../entities/registry/registry-store.js";
 import { EventBus } from "../entities/event-bus.js";
 import type { PluginEntry } from "../config/schema.js";
+import { fakeCoreServices } from "../test-support/fake-core-services.js";
 
 const okGate: PluginGate = async () => ({ decision: "allow" });
 
-function noopServices(): CoreServices {
-  return {
-    registerCommand: () => {}, unregisterCommand: () => {},
-    registerTool: () => {}, unregisterTool: () => {},
-    registerPrompt: () => {}, overridePrompt: () => {}, extendPrompt: () => {}, removePrompt: () => {},
-    registerContextProvider: () => "c", unregisterContextProvider: () => {},
-    registerModelProvider: () => {}, unregisterModelProvider: () => {},
-    registerExporter: () => "e", unregisterExporter: () => {},
-    registerPanel: () => "p", unregisterPanel: () => {},
-    registerAgent: () => {}, registerGuardrail: () => {},
-    registerScope: (p, i) => `${p}:${i}`, unregisterScope: () => {}, unregisterScopeKey: () => {},
-    registerExpectation: () => {}, clearExpectation: () => {}, closeExpectation: () => {},
-    registerChunker: () => "chunker:0", unregisterChunker: () => {},
-    runInNewSession: async () => ({}),
-    workspace: { files: async () => [], readText: async () => null, currentInput: () => "", focusPaths: () => [] },
-  };
+function noopServices() {
+  return fakeCoreServices({
+    registerScope: (p, i) => `${p}:${i}`,
+  });
 }
 
 /** A loader fake that resolves installed entries from an in-memory table and

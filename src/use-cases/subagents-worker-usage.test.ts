@@ -44,6 +44,9 @@ class FakeVcs implements VcsPort {
   async workingDiff(): Promise<string> {
     return "";
   }
+  async listFiles(): Promise<string[] | null> {
+    return [];
+  }
   async createWorktree(id: string): Promise<Worktree> {
     return { id, path: `/wt/${id}`, branch: `b-${id}` };
   }
@@ -115,9 +118,14 @@ class UsageModel extends BaseChatModel {
     if (/Review the work/.test(brief)) {
       return { generations: [{ text: "PASS", message: new AIMessage("PASS") }] };
     }
-    const msg = this.usage
-      ? new AIMessage({ content: this.reply, usage_metadata: { input_tokens: this.usage.input, output_tokens: this.usage.output, total_tokens: this.usage.input + this.usage.output } })
-      : new AIMessage({ content: this.reply });
+    if (this.usage) {
+      const msg = new AIMessage({
+        content: this.reply,
+        usage_metadata: { input_tokens: this.usage.input, output_tokens: this.usage.output, total_tokens: this.usage.input + this.usage.output },
+      } as never);
+      return { generations: [{ text: this.reply, message: msg }] };
+    }
+    const msg = new AIMessage({ content: this.reply });
     return { generations: [{ text: this.reply, message: msg }] };
   }
 }
@@ -150,10 +158,12 @@ describe("worker model usage in the trail and parent stats (§10.14)", () => {
     bus.subscribe("MODEL_USAGE", (e) => {
       const p = e.payload as Record<string, unknown>;
       const u = (p["usage"] ?? {}) as Record<string, unknown>;
+      const agent = p["agent"] as string | undefined;
+      const taskId = p["taskId"] as string | undefined;
       usageEvents.push({
         session: String((e.scope as Record<string, unknown>)?.["session"] ?? ""),
-        agent: p["agent"] as string | undefined,
-        taskId: p["taskId"] as string | undefined,
+        ...(agent !== undefined && { agent }),
+        ...(taskId !== undefined && { taskId }),
         genMsPresent: u["genMs"] !== undefined,
         estimated: p["estimated"] === true,
         input: Number(u["inputSum"] ?? 0),

@@ -13,7 +13,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 
 /** A fake chat model whose `withStructuredOutput` returns a fixed object and
  * records the prompt it was invoked with, exactly once. */
-function fakeStructuredModel(result: unknown | (() => never), capture: { prompt?: string; calls: number }) {
+function fakeStructuredModel(result: unknown | (() => never), capture: { prompt: string; calls: number }) {
   return {
     withStructuredOutput: () => ({
       invoke: async (messages: { content: string }[]) => {
@@ -37,7 +37,7 @@ const evidence = {
 
 describe("§6.7/§10.6 — draftSkillFromSequence", () => {
   it("calls the model ONCE with structured output, frames the evidence as DATA, returns the candidate", async () => {
-    const capture = { calls: 0 };
+    const capture: { prompt: string; calls: number } = { calls: 0, prompt: "" };
     const model = fakeStructuredModel(
       { title: "Read Then Write", body: "A mechanical procedure.", assets: [{ path: "scripts/run.sh", content: "echo hi" }] },
       capture,
@@ -51,7 +51,7 @@ describe("§6.7/§10.6 — draftSkillFromSequence", () => {
   });
 
   it("frames a failure outcome toward a guard/alternative", async () => {
-    const capture = { calls: 0 };
+    const capture: { prompt: string; calls: number } = { calls: 0, prompt: "" };
     const model = fakeStructuredModel({ title: "Guard", body: "Avoid the failing path." }, capture);
     await draftSkillFromSequence(model, { ...evidence, outcome: "failure" });
     expect(capture.prompt).toContain("FAILED");
@@ -59,7 +59,7 @@ describe("§6.7/§10.6 — draftSkillFromSequence", () => {
   });
 
   it("never throws — a model failure yields null", async () => {
-    const capture = { calls: 0 };
+    const capture: { prompt: string; calls: number } = { calls: 0, prompt: "" };
     const model = fakeStructuredModel(() => {
       throw new Error("model down");
     }, capture);
@@ -67,7 +67,7 @@ describe("§6.7/§10.6 — draftSkillFromSequence", () => {
   });
 
   it("an empty title or body yields null (writes nothing downstream)", async () => {
-    const capture = { calls: 0 };
+    const capture: { prompt: string; calls: number } = { calls: 0, prompt: "" };
     const model = fakeStructuredModel({ title: "", body: "x" }, capture);
     expect(await draftSkillFromSequence(model, evidence)).toBeNull();
   });
@@ -75,15 +75,15 @@ describe("§6.7/§10.6 — draftSkillFromSequence", () => {
   it("bounds the fenced evidence packet to memory.evidencePacketMaxChars (M2/M10 override)", async () => {
     // A huge evidence blob; a tiny cap clips the fenced JSON so the prompt is short.
     const big = { ...evidence, steps: Array.from({ length: 500 }, (_, i) => `step_${i}(${"x".repeat(40)})`) };
-    const wide = { calls: 0 };
+    const wide: { prompt: string; calls: number } = { calls: 0, prompt: "" };
     await draftSkillFromSequence(fakeStructuredModel({ title: "T", body: "B" }, wide), big);
-    const narrow = { calls: 0 };
+    const narrow: { prompt: string; calls: number } = { calls: 0, prompt: "" };
     await draftSkillFromSequence(fakeStructuredModel({ title: "T", body: "B" }, narrow), big, {
       evidencePacketMaxChars: 100,
     });
     // The clipped fenced block is between the json fences; a 100-char cap must
     // make the narrow prompt materially shorter than the default-capped one.
-    expect(narrow.prompt!.length).toBeLessThan(wide.prompt!.length);
+    expect(narrow.prompt.length).toBeLessThan(wide.prompt.length);
   });
 
   it("detection is model-free: the detector never touches this seam", () => {

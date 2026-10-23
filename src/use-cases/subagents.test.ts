@@ -53,6 +53,9 @@ class FakeVcs implements VcsPort {
   async workingDiff(): Promise<string> {
     return "";
   }
+  async listFiles(): Promise<string[] | null> {
+    return [];
+  }
   async createWorktree(id: string, _sessionId?: string): Promise<Worktree> {
     this.created.push(id);
     return { id, path: `/wt/${id}`, branch: `voidrift-run-${id}` };

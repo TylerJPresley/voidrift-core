@@ -9,7 +9,6 @@
  */
 import { describe, it, expect, afterEach } from "vitest";
 import { fakeModel } from "@langchain/core/testing";
-import { AIMessage } from "@langchain/core/messages";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -39,7 +38,7 @@ async function makeCore() {
     sessionRepository: new InMemorySessionRepository(),
     checkpointer: createMemoryCheckpointer(),
     chatModelFactory: (_r: ResolvedModel, _e: ModelConfigEntry) =>
-      fakeModel({ responses: [new AIMessage("done, no secrets here")] }),
+      fakeModel(),
   });
   tracked.push(r.api);
   return { api: r.api, ws };

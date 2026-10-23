@@ -197,8 +197,8 @@ describe("runWebFetch SSRF controls (§8.2)", () => {
     expect(r.status).toBe("success");
     expect(r.content).toContain("Previewed 20 of 500 chars");
     expect(hits.length).toBe(1);
-    expect(hits[0].key).toBe("tools.webFetchInlineMax");
-    expect(hits[0].value).toBe(100);
+    expect(hits[0]?.key).toBe("tools.webFetchInlineMax");
+    expect(hits[0]?.value).toBe(100);
   });
 
   it("§13.11: content that fits the inline max emits no LIMIT_HIT", async () => {

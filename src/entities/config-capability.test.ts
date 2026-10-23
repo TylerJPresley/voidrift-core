@@ -709,7 +709,7 @@ describe("ConfigCapability (§13)", () => {
       await cap.load();
       const layers = cap.limitLayers();
       expect(layers.map((l) => l.layer)).toEqual(["global", "project"]);
-      expect(layers[1].path).toBe("memory://project");
+      expect(layers[1]?.path).toBe("memory://project");
     });
   });
 });

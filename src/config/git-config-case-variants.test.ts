@@ -43,10 +43,10 @@ function* generateCaseVariants(str: string, limit = 2000): Generator<string> {
       const variant = str.split("");
       for (let bit = 0; bit < letters.length; bit++) {
         const idx = letters[bit];
-        if (mask & (1 << bit)) {
-          variant[idx] = variant[idx].toUpperCase();
-        } else {
-          variant[idx] = variant[idx].toLowerCase();
+        if (idx !== undefined && mask & (1 << bit)) {
+          variant[idx] = variant[idx]?.toUpperCase() ?? "";
+        } else if (idx !== undefined) {
+          variant[idx] = variant[idx]?.toLowerCase() ?? "";
         }
       }
       yield variant.join("");
@@ -67,9 +67,9 @@ function* generateCaseVariants(str: string, limit = 2000): Generator<string> {
       const variant = str.split("");
       for (const idx of letters) {
         if (next() > 0.5) {
-          variant[idx] = variant[idx].toUpperCase();
+          variant[idx]! = variant[idx]!.toUpperCase();
         } else {
-          variant[idx] = variant[idx].toLowerCase();
+          variant[idx]! = variant[idx]!.toLowerCase();
         }
       }
       const key = variant.join("");

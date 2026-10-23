@@ -70,7 +70,7 @@ function makeServices(sink: Record<string, unknown>, registryStore?: RegistrySto
     registerChunker: () => "chunker:0",
     unregisterChunker: () => {},
     runInNewSession: async () => ({ status: "completed" }),
-    workspace: { files: async () => [], readText: async () => null, currentInput: () => "", focusPaths: () => [] },
+    workspace: { files: async () => [], readText: async () => null, currentInput: () => "", focusPaths: () => [], cacheDir: () => "/tmp/cache", hashFor: () => null },
   };
 }
 
@@ -559,6 +559,11 @@ describe("Plugins capability (§12.4)", () => {
         return `panels.${name}`;
       },
       unregisterPanel: (key) => calls.push(`-panel:${key}`),
+      registerDataset: (_p, name) => {
+        calls.push(`+dataset:${name}`);
+        return `datasets.${name}`;
+      },
+      unregisterDataset: (key) => calls.push(`-dataset:${key}`),
       registerAgent: () => calls.push("+agent"),
       registerGuardrail: () => calls.push("+guardrail"),
       registerScope: (pluginId, id, scope) => {
@@ -577,7 +582,7 @@ describe("Plugins capability (§12.4)", () => {
       },
       unregisterChunker: (key) => calls.push(`-chunker:${key}`),
       runInNewSession: async () => ({ status: "completed" }),
-      workspace: { files: async () => [], readText: async () => null, currentInput: () => "", focusPaths: () => [] },
+      workspace: { files: async () => [], readText: async () => null, currentInput: () => "", focusPaths: () => [], cacheDir: () => "/tmp/cache", hashFor: () => null },
     };
     const scopedProbe: { hasTopLevelSetMode?: boolean; hasSessionSetMode?: boolean; sessionKeys?: string[] } = {};
     const bus = new EventBus();

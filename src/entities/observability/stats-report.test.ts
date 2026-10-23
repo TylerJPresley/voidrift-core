@@ -13,7 +13,7 @@ import { buildStatsReport, parseTrailLines } from "./stats-report.js";
 import type { ObsRecord } from "./obs-record.js";
 
 function usage(
-  o: Partial<ObsRecord> & {
+  o: {
     model: string;
     agent?: string;
     worker?: string;

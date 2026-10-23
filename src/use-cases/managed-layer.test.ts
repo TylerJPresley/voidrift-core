@@ -25,6 +25,8 @@ function fsWith(files: Record<string, string>): FileSystemPort {
     writeFileAtomic: async () => undefined,
     exists: async (p) => p in files,
     remove: async () => undefined,
+    removeDir: async () => undefined,
+    rename: async () => undefined,
     glob: async () => [],
     search: async () => [],
   };

@@ -20,7 +20,7 @@ import { describe, it, expect } from "vitest";
 import { EventBus, type EventEnvelope } from "./entities/event-bus.js";
 import { RegistryStore } from "./entities/registry/registry-store.js";
 import { Guardian, builtinGuardrails, type GuardedCall } from "./entities/guardian.js";
-import { Plugins, type CoreServices, type ScopedCoreApi } from "./use-cases/plugins.js";
+import { Plugins, type ScopedCoreApi } from "./use-cases/plugins.js";
 import { Expectations } from "./use-cases/expectations.js";
 import type { PluginEntry } from "./config/schema.js";
 import {
@@ -29,6 +29,7 @@ import {
   DEFAULT_SHELL_EQUIVALENTS,
 } from "./config/schema.js";
 import type { ResolvedPlugin, PluginLoader } from "./adapters/plugin-loader.js";
+import { fakeCoreServices } from "./test-support/fake-core-services.js";
 
 const lists = {
   safe: DEFAULT_SHELL_SAFE,
@@ -39,27 +40,8 @@ const lists = {
 
 /** CoreServices wired like boot.ts: Guardian for scopes, a REAL Expectations for
  * the prediction seam fed by an in-memory scope→targets journal reader. */
-function servicesFor(guardian: Guardian, expectations: Expectations): CoreServices {
-  const noop = (): void => {};
-  return {
-    registerCommand: noop,
-    unregisterCommand: noop,
-    registerTool: noop,
-    unregisterTool: noop,
-    registerPrompt: noop,
-    overridePrompt: noop,
-    extendPrompt: noop,
-    removePrompt: noop,
-    registerContextProvider: () => "ctx:0",
-    unregisterContextProvider: noop,
-    registerModelProvider: noop,
-    unregisterModelProvider: noop,
-    registerExporter: () => "exp:0",
-    unregisterExporter: noop,
-    registerPanel: () => "panels.x",
-    unregisterPanel: noop,
-    registerAgent: noop,
-    registerGuardrail: noop,
+function servicesFor(guardian: Guardian, expectations: Expectations) {
+  return fakeCoreServices({
     registerScope: (pluginId, id, scope) => {
       const key = `${pluginId}:${id}`;
       guardian.registerScope(key, scope);
@@ -70,11 +52,7 @@ function servicesFor(guardian: Guardian, expectations: Expectations): CoreServic
     registerExpectation: (scope, predicted) => expectations.register({ scope, predicted }),
     clearExpectation: (scope) => expectations.clear(scope),
     closeExpectation: (scope) => void expectations.closeScope(scope).catch(() => undefined),
-    registerChunker: () => "chunker:0",
-    unregisterChunker: () => {},
-    runInNewSession: async () => ({ status: "completed" }),
-    workspace: { files: async () => [], readText: async () => null, currentInput: () => "", focusPaths: () => [] },
-  };
+  });
 }
 
 function resolved(id: string): ResolvedPlugin {

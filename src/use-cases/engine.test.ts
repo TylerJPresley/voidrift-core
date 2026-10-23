@@ -850,7 +850,7 @@ describe("Engine — summed input & generation time on MODEL_USAGE (§10.7, cli 
     return new StreamingScript({});
   }
 
-  async function engineWithModel(model: unknown, id: string, now: () => number, extraTool?: { name: string; exec: () => Promise<{ content: string; status: string }> }) {
+  async function engineWithModel(model: unknown, id: string, now: () => number, extraTool?: { name: string; exec: () => Promise<{ content: string; status: "success" | "error" }> }) {
     const { EventBus } = await import("../entities/event-bus.js");
     const { Guardian, builtinGuardrails } = await import("../entities/guardian.js");
     const { Warden } = await import("../entities/warden.js");
@@ -865,7 +865,7 @@ describe("Engine — summed input & generation time on MODEL_USAGE (§10.7, cli 
     if (extraTool) {
       registry.register(
         { name: extraTool.name, description: "a tool", schema: { parse: (v: unknown) => v } as never, readOnly: false, origin: "builtin" },
-        async () => extraTool.exec(),
+        async (_args: unknown, _ctx: { workspaceRoot: string; sessionId: string }) => extraTool.exec(),
       );
     }
     // Allow the custom tool without a prompt.

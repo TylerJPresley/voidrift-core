@@ -82,7 +82,8 @@ describe("limits config schema (§13.11)", () => {
 
   it("accepts a valid nested leaf", () => {
     const parsed = ConfigSchema.parse({ limits: { tools: { commandOutputMaxBytes: 5000 } } });
-    expect(parsed.limits.tools?.commandOutputMaxBytes).toBe(5000);
+    const tools = parsed.limits && typeof parsed.limits === 'object' && 'tools' in parsed.limits ? (parsed.limits as Record<string, unknown>).tools as Record<string, number> : undefined;
+    expect(tools?.commandOutputMaxBytes).toBe(5000);
   });
 
   it("rejects an unknown area naming it", () => {
@@ -112,7 +113,8 @@ describe("limits config schema (§13.11)", () => {
 
   it("accepts a fractional ratio leaf", () => {
     const parsed = ConfigSchema.parse({ limits: { lane: { writeContextShare: 0.5 } } });
-    expect(parsed.limits.lane?.writeContextShare).toBe(0.5);
+    const lane = parsed.limits && typeof parsed.limits === 'object' && 'lane' in parsed.limits ? (parsed.limits as Record<string, unknown>).lane as Record<string, number> : undefined;
+    expect(lane?.writeContextShare).toBe(0.5);
   });
 
   it("accepts the new series leaves within bounds", () => {
@@ -124,10 +126,15 @@ describe("limits config schema (§13.11)", () => {
         approval: { autoDenySeconds: 30 },
       },
     });
-    expect(parsed.limits.context?.metaBlockMaxTokens).toBe(200);
-    expect(parsed.limits.ingest?.maxParallel).toBe(4);
-    expect(parsed.limits.tools?.searchFallbackMax).toBe(500);
-    expect(parsed.limits.approval?.autoDenySeconds).toBe(30);
+    const limitsObj = parsed.limits && typeof parsed.limits === 'object' ? (parsed.limits as Record<string, unknown>) : {};
+    const context = limitsObj.context as Record<string, number> | undefined;
+    const ingest = limitsObj.ingest as Record<string, number> | undefined;
+    const tools = limitsObj.tools as Record<string, number> | undefined;
+    const approval = limitsObj.approval as Record<string, number> | undefined;
+    expect(context?.metaBlockMaxTokens).toBe(200);
+    expect(ingest?.maxParallel).toBe(4);
+    expect(tools?.searchFallbackMax).toBe(500);
+    expect(approval?.autoDenySeconds).toBe(30);
   });
 
   it("rejects context.metaBlockMaxTokens below its min (80)", () => {

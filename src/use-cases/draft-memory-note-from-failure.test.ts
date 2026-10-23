@@ -11,7 +11,7 @@ import { describe, it, expect } from "vitest";
 import { draftMemoryNoteFromFailure } from "./engine.js";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 
-function fakeStructuredModel(result: unknown | (() => never), capture: { prompt?: string; calls: number }) {
+function fakeStructuredModel(result: unknown | (() => never), capture: { prompt: string; calls: number }) {
   return {
     withStructuredOutput: () => ({
       invoke: async (messages: { content: string }[]) => {
@@ -35,7 +35,7 @@ const toolError = {
 
 describe("§6.7/§10.6 — draftMemoryNoteFromFailure", () => {
   it("calls the model ONCE with structured output, frames evidence as DATA, returns the note", async () => {
-    const capture = { calls: 0 };
+    const capture: { prompt: string; calls: number } = { calls: 0, prompt: "" };
     const model = fakeStructuredModel({ title: "Check Path Exists", body: "edit_file failed with ENOENT; read the file first." }, capture);
     const out = await draftMemoryNoteFromFailure(model, toolError);
     expect(capture.calls).toBe(1);
@@ -45,14 +45,14 @@ describe("§6.7/§10.6 — draftMemoryNoteFromFailure", () => {
   });
 
   it("frames a guardian_block toward an approach/alternative", async () => {
-    const capture = { calls: 0 };
+    const capture: { prompt: string; calls: number } = { calls: 0, prompt: "" };
     const model = fakeStructuredModel({ title: "Delegate The Write", body: "The write was denied; delegate to a worker." }, capture);
     await draftMemoryNoteFromFailure(model, { ...toolError, kind: "guardian_block", tool: "Write file", errorClass: "denied" });
     expect(capture.prompt).toContain("DENIED");
   });
 
   it("never throws — a model failure yields null", async () => {
-    const capture = { calls: 0 };
+    const capture: { prompt: string; calls: number } = { calls: 0, prompt: "" };
     const model = fakeStructuredModel(() => {
       throw new Error("model down");
     }, capture);
@@ -60,7 +60,7 @@ describe("§6.7/§10.6 — draftMemoryNoteFromFailure", () => {
   });
 
   it("an empty title or body yields null (writes nothing downstream)", async () => {
-    const capture = { calls: 0 };
+    const capture: { prompt: string; calls: number } = { calls: 0, prompt: "" };
     const model = fakeStructuredModel({ title: "", body: "x" }, capture);
     expect(await draftMemoryNoteFromFailure(model, toolError)).toBeNull();
   });

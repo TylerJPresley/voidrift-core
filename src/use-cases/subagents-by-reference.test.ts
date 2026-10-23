@@ -37,6 +37,7 @@ class FakeVcs implements VcsPort {
   isRepo(): boolean { return this.repo; }
   async currentBranch(): Promise<string | null> { return "main"; }
   async workingDiff(): Promise<string> { return ""; }
+  async listFiles(): Promise<string[] | null> { return []; }
   async createWorktree(id: string): Promise<Worktree> { return { id, path: `/wt/${id}`, branch: `voidrift-run-${id}` }; }
   async mergeWorktree(): Promise<MergeResult> { return { merged: true }; }
   async abandonWorktree(wt: Worktree): Promise<string> { return `voidrift-recovery-${wt.id}`; }

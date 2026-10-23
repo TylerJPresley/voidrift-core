@@ -100,7 +100,7 @@ function firstToken(brief: string): string {
   return brief.split(/\s+/)[0] ?? "";
 }
 function mkWorker(r: DispatchRequest, status: WorkerInfo["status"], summary: string): WorkerInfo {
-  return { workerId: `w-${r.id ?? "x"}`, agent: r.agent, status, summary, ...(r.id ? { taskId: r.id } : {}) };
+  return { workerId: `w-${r.id ?? "x"}`, agent: r.agent, status, summary, pendingApproval: false, ...(r.id ? { taskId: r.id } : {}) };
 }
 
 /** A read result stub: the text with a stable content hash. */

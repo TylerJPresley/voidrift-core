@@ -110,7 +110,7 @@ function factory(model: BaseChatModel) {
 let ws: string;
 const cores: { session: { shutdown: () => Promise<void> } }[] = [];
 
-async function makeCore(model: BaseChatModel, seed: object, startAgent?: string) {
+async function makeCore(model: BaseChatModel, seed: Record<string, unknown>, startAgent?: string) {
   const ready = await createCore({
     workspaceRoot: ws,
     configStore: new InMemoryConfigStore(seed),

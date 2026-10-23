@@ -115,7 +115,7 @@ describe("protected-path classification (§9.4)", () => {
     const ctx = { workspaceRoot: ws, globalConfigDir: path.join(ws, "cfg"), home: ws };
     // Writes by model tools stay DENIED (run is not a writable cache subtree).
     expect(classifyControlPath(path.join(ws, ".voidrift/cache/run/s1/x.txt"), ctx)).toBe("deny");
-    expect(classifyControlPath(".voidrift/cache/run/s1/x.txt", { ...ctx, workspaceRoot: undefined })).toBe("deny");
+    expect(classifyControlPath(".voidrift/cache/run/s1/x.txt", { globalConfigDir: path.join(ws, "cfg"), home: ws })).toBe("deny");
     // read_file has no control-path check: a store round-trips (covered above by
     // reading the handle off disk). The DENY here is the WRITE gate only.
   });

@@ -258,8 +258,8 @@ describe.skipIf(skip)("runCommand — limits registry (§13.11 TOOL5/6/7)", () =
     const limits = new LimitsCapability(resolveLimits([{ layer: "project", limits: { tools: { commandOutputMaxBytes: 50 } } }]), bus);
     await runCommand("sh -c 'head -c 2000 /dev/zero | tr \"\\0\" a'", { cwd: ws, limits });
     expect(hits.length).toBe(1);
-    expect(hits[0].key).toBe("tools.commandOutputMaxBytes");
-    expect(hits[0].value).toBe(50);
+    expect(hits[0]?.key).toBe("tools.commandOutputMaxBytes");
+    expect(hits[0]?.value).toBe(50);
   });
 
   it("does not emit a LIMIT_HIT when the output fits", async () => {

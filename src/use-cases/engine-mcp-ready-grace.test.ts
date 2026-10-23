@@ -61,8 +61,8 @@ describe("awaitMcpReadyBounded", () => {
 
     expect(timedOut).toBe(true);
     expect(events.length).toBe(1);
-    expect(events[0].key).toBe("mcp.readyGraceMs");
-    expect(events[0].area).toBe("mcp");
-    expect(events[0].value).toBe(10);
+    expect(events[0]?.key).toBe("mcp.readyGraceMs");
+    expect(events[0]?.area).toBe("mcp");
+    expect(events[0]?.value).toBe(10);
   });
 });

@@ -19,12 +19,15 @@ describe("markdownChunker", () => {
     const text = ["# A", "a1", "a2", "## B", "b1", "## C", "c1", "c2"].join("\n");
     const chunks = markdownChunker.chunk(text, 10);
     expect(chunks.length).toBeGreaterThanOrEqual(1);
-    expect(chunks[0].startLine).toBe(1);
+    expect(chunks[0]?.startLine).toBe(1);
     // ranges are contiguous and cover every line
     for (let i = 1; i < chunks.length; i++) {
-      expect(chunks[i].startLine).toBe(chunks[i - 1].endLine + 1);
+      const prevEndLine = chunks[i - 1]?.endLine;
+      if (prevEndLine !== undefined) {
+        expect(chunks[i]?.startLine).toBe(prevEndLine + 1);
+      }
     }
-    expect(chunks[chunks.length - 1].endLine).toBe(8);
+    expect(chunks[chunks.length - 1]?.endLine).toBe(8);
   });
 
   it("merges small adjacent sections and splits an oversized section on blank lines", () => {
@@ -56,7 +59,7 @@ describe("jsonChunker", () => {
     const text = JSON.stringify([{ a: 1 }, { b: 2 }, { c: 3 }], null, 2);
     const chunks = jsonChunker.chunk(text, 3);
     expect(chunks.length).toBeGreaterThanOrEqual(1);
-    expect(chunks[0].startLine).toBe(1);
+    expect(chunks[0]?.startLine).toBe(1);
   });
 });
 
@@ -65,8 +68,8 @@ describe("yamlChunker", () => {
     const text = ["a: 1", "b:", "  x: 2", "  y: 3", "c: 4"].join("\n");
     const chunks = yamlChunker.chunk(text, 3);
     expect(chunks.length).toBeGreaterThanOrEqual(2);
-    expect(chunks[0].startLine).toBe(1);
-    expect(chunks[chunks.length - 1].endLine).toBe(5);
+    expect(chunks[0]?.startLine).toBe(1);
+    expect(chunks[chunks.length - 1]?.endLine).toBe(5);
     expect(yamlChunker.chunk(text, 3)).toEqual(chunks);
   });
 });
@@ -85,8 +88,8 @@ describe("genericChunker", () => {
     ].join("\n");
     const chunks = genericChunker.chunk(text, 3);
     expect(chunks.length).toBeGreaterThanOrEqual(2);
-    expect(chunks[0].startLine).toBe(1);
-    expect(chunks[chunks.length - 1].endLine).toBe(8);
+    expect(chunks[0]?.startLine).toBe(1);
+    expect(chunks[chunks.length - 1]?.endLine).toBe(8);
   });
 
   it("applies a small overlap between adjacent line-window chunks", () => {
@@ -96,7 +99,11 @@ describe("genericChunker", () => {
     // overlap: a later chunk starts at or before the previous chunk's endLine
     let overlapped = false;
     for (let i = 1; i < chunks.length; i++) {
-      if (chunks[i].startLine <= chunks[i - 1].endLine) overlapped = true;
+      const currStart = chunks[i]?.startLine;
+      const prevEnd = chunks[i - 1]?.endLine;
+      if (currStart !== undefined && prevEnd !== undefined && currStart <= prevEnd) {
+        overlapped = true;
+      }
     }
     expect(overlapped).toBe(true);
     expect(genericChunker.chunk(lines, 5)).toEqual(chunks); // deterministic

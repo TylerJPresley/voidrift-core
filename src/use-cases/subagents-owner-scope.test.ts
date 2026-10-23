@@ -52,6 +52,9 @@ class FakeVcs implements VcsPort {
   async workingDiff(): Promise<string> {
     return "";
   }
+  async listFiles(): Promise<string[] | null> {
+    return [];
+  }
   async createWorktree(id: string): Promise<Worktree> {
     return { id, path: `/wt/${id}`, branch: `b-${id}` };
   }

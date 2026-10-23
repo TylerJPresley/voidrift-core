@@ -52,6 +52,8 @@ function makeServicesWithStore(store: Map<string, Chunker>): CoreServices {
     unregisterExporter: () => {},
     registerPanel: () => "panels.x",
     unregisterPanel: () => {},
+    registerDataset: () => "datasets.x",
+    unregisterDataset: () => {},
     registerAgent: () => {},
     registerGuardrail: () => {},
     registerScope: (p, i) => `${p}:${i}`,
@@ -67,7 +69,7 @@ function makeServicesWithStore(store: Map<string, Chunker>): CoreServices {
     },
     unregisterChunker: (key) => void store.delete(key),
     runInNewSession: async () => ({}),
-    workspace: { files: async () => [], readText: async () => null, currentInput: () => "", focusPaths: () => [] },
+    workspace: { files: async () => [], readText: async () => null, currentInput: () => "", focusPaths: () => [], cacheDir: () => "/tmp/cache", hashFor: () => null },
   };
 }
 

@@ -49,7 +49,9 @@ describe("task tool — brief pass-by-reference (§7.2)", () => {
     const t = buildTaskTool({ workers, dispatch, limits, bus, runCache, sessionId: "s1" });
     const brief = "Q".repeat(20_000);
     await invoke(t, { worker: "researcher", task: brief });
-    const sent = (dispatch.mock.calls[0]![0] as { task: string }[])[0]!.task;
+    const callArgs = dispatch.mock.calls[0];
+    const requests = (callArgs && callArgs.length > 0 ? (callArgs as unknown[])[0] : undefined) as Array<{ task: string }> | undefined;
+    const sent = requests?.[0]?.task ?? "";
     expect(sent).toMatch(/\[brief continues: \d+ bytes at \.voidrift\/cache\/run\/s1\/.+\.txt — read it with read_file\]/);
     expect(sent).not.toContain("[truncated");
     const handle = sent.match(/at (\.voidrift\/cache\/run\/\S+\.txt)/)![1]!;
@@ -62,7 +64,9 @@ describe("task tool — brief pass-by-reference (§7.2)", () => {
     const dispatch = vi.fn(async () => single("merged", "ok"));
     const t = buildTaskTool({ workers, dispatch, limits });
     await invoke(t, { worker: "researcher", task: "x".repeat(200) });
-    const sent = (dispatch.mock.calls[0]![0] as { task: string }[])[0]!.task;
+    const callArgs = dispatch.mock.calls[0];
+    const requests = (callArgs && callArgs.length > 0 ? (callArgs as unknown[])[0] : undefined) as Array<{ task: string }> | undefined;
+    const sent = requests?.[0]?.task ?? "";
     expect(sent).toContain("[truncated at limits.task.briefMaxChars");
   });
 });
@@ -99,7 +103,9 @@ describe("task tool — secrets in stored text are masked (§10.10)", () => {
     const secret = "ghp_" + "a".repeat(36);
     const brief = "x".repeat(20_000) + "\ntoken " + secret;
     await invoke(t, { worker: "researcher", task: brief });
-    const sent = (dispatch.mock.calls[0]![0] as { task: string }[])[0]!.task;
+    const callArgs = dispatch.mock.calls[0];
+    const requests = (callArgs && callArgs.length > 0 ? (callArgs as unknown[])[0] : undefined) as Array<{ task: string }> | undefined;
+    const sent = requests?.[0]?.task ?? "";
     const handle = sent.match(/at (\.voidrift\/cache\/run\/\S+\.txt)/)![1]!;
     const stored = runCache.read(handle)!;
     expect(stored).not.toContain(secret);
