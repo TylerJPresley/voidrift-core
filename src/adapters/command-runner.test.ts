@@ -10,14 +10,37 @@
  *
  * Linux/macOS only: the runner uses POSIX process groups (`detached` + negative
  * pid). The suite skips on win32.
+ *
+ * REGRESSION GUARD: no test command string in this suite contains `exec -a` (bash-only,
+ * fails on dash). Tests use symlink markers instead (see process-marker.ts).
  */
 import { hermeticTmp } from "../test-hermetic.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execSync } from "node:child_process";
 import fs from "node:fs/promises";
 import { runCommand } from "./command-runner.js";
+import { createProcessMarker } from "../test-support/process-marker.js";
 
 const skip = process.platform === "win32";
+
+// Regression guard: fail if any command string in tests contains `exec -a` (bash-only).
+describe.skipIf(skip)("REGRESSION: no exec -a in command strings", () => {
+  it("source code contains no exec -a commands", async () => {
+    // This test reads the source and verifies no command string contains the
+    // bash-only `exec -a`, which fails on dash. If this fails, commands must be
+    // migrated to symlink markers (createProcessMarker).
+    const fs = await import("node:fs");
+    const source = fs.readFileSync(__filename, "utf8");
+    const lines = source.split("\n");
+    const offending = lines
+      .map((line, idx) => ({ line, idx: idx + 1 }))
+      .filter(({ line }) => /`.*exec\s+-a\s+/.test(line) || /'.*exec\s+-a\s+/.test(line) || /".*exec\s+-a\s+"/.test(line));
+    if (offending.length > 0) {
+      const msg = offending.map(({ line, idx }) => `  Line ${idx}: ${line.trim()}`).join("\n");
+      throw new Error(`Found bash-only \`exec -a\` in test commands:\n${msg}`);
+    }
+  });
+});
 
 /** True while a real sleep process (not the matcher itself) carries the marker. */
 function markerAlive(marker: string): boolean {
@@ -55,8 +78,9 @@ describe.skipIf(skip)("runCommand — process-group lifecycle (§8.2, §3.3/§5.
 
   it("cancel during a long sleep kills the process and its group within ~2s", async () => {
     const marker = `vrmark_${Date.now()}_a`;
+    const markerPath = await createProcessMarker(ws, marker, "sleep");
     const ac = new AbortController();
-    const p = runCommand(`exec -a ${marker} sleep 30`, { cwd: ws, signal: ac.signal });
+    const p = runCommand(`${markerPath} 30`, { cwd: ws, signal: ac.signal });
     // Let the child spawn, then confirm it is alive, then cancel.
     await new Promise((r) => setTimeout(r, 300));
     expect(markerAlive(marker)).toBe(true);
@@ -68,10 +92,11 @@ describe.skipIf(skip)("runCommand — process-group lifecycle (§8.2, §3.3/§5.
 
   it("cancel kills a background grandchild too (sh -c 'sleep 30 & wait')", async () => {
     const marker = `vrmark_${Date.now()}_b`;
+    const markerPath = await createProcessMarker(ws, marker, "sleep");
     const ac = new AbortController();
     // The grandchild sleep is backgrounded under an inner sh; it carries the
-    // marker in its argv via `exec -a`, so pgrep can find it independently.
-    const p = runCommand(`sh -c '(exec -a ${marker} sleep 30) & wait'`, { cwd: ws, signal: ac.signal });
+    // marker as argv[0] via the symlink, so pgrep can find it independently.
+    const p = runCommand(`sh -c '(${markerPath} 30) & wait'`, { cwd: ws, signal: ac.signal });
     await new Promise((r) => setTimeout(r, 300));
     expect(markerAlive(marker)).toBe(true);
     ac.abort();
@@ -82,7 +107,8 @@ describe.skipIf(skip)("runCommand — process-group lifecycle (§8.2, §3.3/§5.
 
   it("timeout kills the group and reports exit 124 with the §8.2 timeout string", async () => {
     const marker = `vrmark_${Date.now()}_c`;
-    const r = await runCommand(`exec -a ${marker} sleep 30`, { cwd: ws, timeoutMs: 400 });
+    const markerPath = await createProcessMarker(ws, marker, "sleep");
+    const r = await runCommand(`${markerPath} 30`, { cwd: ws, timeoutMs: 400 });
     expect(r.exitCode).toBe(124);
     expect(r.output).toBe("Error: Command timed out after 0.4 seconds.");
     expect(await waitGone(marker, 2000)).toBe(true);
@@ -90,9 +116,10 @@ describe.skipIf(skip)("runCommand — process-group lifecycle (§8.2, §3.3/§5.
 
   it("abort BEFORE spawn spawns nothing", async () => {
     const marker = `vrmark_${Date.now()}_d`;
+    const markerPath = await createProcessMarker(ws, marker, "sleep");
     const ac = new AbortController();
     ac.abort();
-    const r = await runCommand(`exec -a ${marker} sleep 30`, { cwd: ws, signal: ac.signal });
+    const r = await runCommand(`${markerPath} 30`, { cwd: ws, signal: ac.signal });
     expect(r.output).toBe("Command cancelled.");
     // Give any (erroneous) spawn a moment, then assert nothing ran.
     await new Promise((res) => setTimeout(res, 200));
@@ -129,8 +156,9 @@ describe.skipIf(skip)("runCommand — process-group lifecycle (§8.2, §3.3/§5.
 
   it("leaves no zombie/leaked process after a completed run", async () => {
     const marker = `vrmark_${Date.now()}_e`;
+    const markerPath = await createProcessMarker(ws, marker, "sleep");
     // A brief marked sleep that finishes on its own; nothing marked may linger.
-    const r = await runCommand(`exec -a ${marker} sleep 0.2`, { cwd: ws });
+    const r = await runCommand(`${markerPath} 0.2`, { cwd: ws });
     expect(r.exitCode).toBe(0);
     expect(await waitGone(marker, 2000)).toBe(true);
   }, 10_000);
@@ -361,8 +389,9 @@ describe.skipIf(skip)("runCommand — oversized output by reference (§8.2, §8.
     const limits = new LimitsCapability(resolveLimits([{ layer: "project", limits: { tools: { commandOutputMaxBytes: 100 } } }]), new EventBus());
     const runCache = new InMemoryRunCache({ sessionId: "s5" });
     const marker = `vrmark_${Date.now()}_byref`;
+    const markerPath = await createProcessMarker(ws, marker, "sh");
     const ac = new AbortController();
-    const p = runCommand(`sh -c 'exec -a ${marker} sh -c "while true; do echo spam; done"'`, { cwd: ws, signal: ac.signal, limits, runCache });
+    const p = runCommand(`${markerPath} -c "while true; do echo spam; done"`, { cwd: ws, signal: ac.signal, limits, runCache });
     await new Promise((r) => setTimeout(r, 300));
     ac.abort();
     const r = await p;

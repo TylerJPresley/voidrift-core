@@ -5,6 +5,9 @@
  * per-test temp workspace: the §8.2 names, argument fields, success output
  * contracts (headers, "N lines", diff blocks), and the error strings. Confirms
  * the model-facing surface is the blueprint's, not deepagents' native one.
+ *
+ * REGRESSION GUARD: no test command string in this suite contains `exec -a` (bash-only,
+ * fails on dash). Tests use symlink markers instead (see process-marker.ts).
  */
 import { hermeticTmp } from "../test-hermetic.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -17,6 +20,7 @@ import { ToolRegistry } from "../entities/tool-registry.js";
 import { z } from "zod";
 import type { StructuredToolInterface } from "@langchain/core/tools";
 import { ToolMessage } from "@langchain/core/messages";
+import { createProcessMarker } from "../test-support/process-marker.js";
 
 function byName(tools: StructuredToolInterface[], name: string): StructuredToolInterface {
   const t = tools.find((x) => x.name === name);
@@ -54,6 +58,24 @@ describe("builtinToolDefinitions (§8.1, §8.2)", () => {
     ]);
     const ro = defs.filter((d) => d.def.readOnly).map((d) => d.def.name);
     expect(ro).toEqual(["read_file", "glob_files", "workspace_map", "search_contents", "list_memory", "ingest"]);
+  });
+});
+
+describe("REGRESSION: no exec -a in command strings", () => {
+  it("source code contains no exec -a commands", async () => {
+    // This test reads the source and verifies no command string contains the
+    // bash-only `exec -a`, which fails on dash. If this fails, commands must be
+    // migrated to symlink markers (createProcessMarker).
+    const fs = await import("node:fs");
+    const source = fs.readFileSync(__filename, "utf8");
+    const lines = source.split("\n");
+    const offending = lines
+      .map((line, idx) => ({ line, idx: idx + 1 }))
+      .filter(({ line }) => /`.*exec\s+-a\s+/.test(line) || /'.*exec\s+-a\s+/.test(line) || /".*exec\s+-a\s+"/.test(line));
+    if (offending.length > 0) {
+      const msg = offending.map(({ line, idx }) => `  Line ${idx}: ${line.trim()}`).join("\n");
+      throw new Error(`Found bash-only \`exec -a\` in test commands:\n${msg}`);
+    }
   });
 });
 
@@ -258,6 +280,7 @@ describe("buildCoreTools over a LocalShellBackend (§8.2)", () => {
     if (process.platform === "win32") return;
     const { execSync } = await import("node:child_process");
     const marker = `vrmark_builtin_${Date.now()}`;
+    const markerPath = await createProcessMarker(ws, marker, "sleep");
     const alive = (): boolean =>
       execSync(`pgrep -af ${marker} || true`, { encoding: "utf8" })
         .split("\n")
@@ -267,7 +290,7 @@ describe("buildCoreTools over a LocalShellBackend (§8.2)", () => {
     const ac = new AbortController();
     const started = Date.now();
     const p = byName(tools, "execute_command").invoke(
-      { command: `exec -a ${marker} sleep 30` } as never,
+      { command: `${markerPath} 30` } as never,
       { signal: ac.signal },
     );
     // Give the child time to spawn, confirm it is alive, then cancel.
@@ -298,6 +321,7 @@ describe("buildCoreTools over a LocalShellBackend (§8.2)", () => {
     if (process.platform === "win32") return;
     const { execSync } = await import("node:child_process");
     const marker = `vrmark_waitcheck_${Date.now()}`;
+    const markerPath = await createProcessMarker(ws, marker, "sleep");
     const alive = (): boolean =>
       execSync(`pgrep -af ${marker} || true`, { encoding: "utf8" })
         .split("\n")
@@ -308,7 +332,7 @@ describe("buildCoreTools over a LocalShellBackend (§8.2)", () => {
     const started = Date.now();
     // interval 0 keeps the first poll in-flight; the check itself blocks 30 s.
     const p = byName(tools, "wait").invoke(
-      { check: `exec -a ${marker} sleep 30`, interval: 1, timeout: 60 } as never,
+      { check: `${markerPath} 30`, interval: 1, timeout: 60 } as never,
       { signal: ac.signal },
     );
     await new Promise((r) => setTimeout(r, 300));
