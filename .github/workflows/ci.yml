@@ -21,6 +21,9 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.node }}
+      - name: Use npm 11
+        # Node 22 bundles npm 10, which crashes on install without a lockfile
+        run: npm install -g npm@11
       - run: npm install
         # switch to npm ci + cache once lockfiles are committed
       - run: npm run build
