@@ -1195,6 +1195,53 @@ describe("Engine — shared CONTEXT_OVERFLOW guard across call sites (§4.10, in
     // The standing summary is untouched (none was set).
     expect(session.rollingSummary).toBeUndefined();
   });
+
+  // §4.8 — the meter must update on model-call COMPLETION with the real
+  // input_tokens, not one round late. These drive the real engine/pipeline path
+  // with a fakeModel() message carrying usage_metadata and watch the bus.
+  it("emits CONTEXT_BUDGET_UPDATED on model-call completion carrying the REAL input_tokens (§4.8, post-call report)", async () => {
+    // Large window like the user's `auto` endpoint: the pre-call ESTIMATE of a
+    // short prompt rounds to 0%, so only a post-call report with the real
+    // input_tokens moves the meter. Before the fix, no post-call event fired.
+    const reply = new AIMessage({ content: "done", usage_metadata: { input_tokens: 50_000, output_tokens: 5, total_tokens: 50_005 } } as never);
+    const { engine, session, bus } = await engineWith(fakeModel().respond(reply) as never, "budget-postcall", 262_144, 4_096);
+    const budgets: { percentage: number; usedTokens: number }[] = [];
+    bus.subscribe("CONTEXT_BUDGET_UPDATED", (e) => budgets.push(e.payload as never));
+    const res = await engine.runTurn(session, "go");
+    expect(res.status).toBe("completed");
+    // A budget event carries the provider-reported usage, not just the estimate.
+    const real = budgets.find((b) => b.usedTokens === 50_000);
+    expect(real).toBeDefined();
+    expect(real!.percentage).toBeGreaterThan(0);
+    // The last (settled) meter value reflects the real usage.
+    expect(budgets.at(-1)?.usedTokens).toBe(50_000);
+  });
+
+  it("the meter settles to the real usage WITHOUT a second round (fan-out-freeze case, §4.8)", async () => {
+    // One turn, one model call: the completion report alone must surface the real
+    // percentage. Before the fix the real usage only reached the footer on the
+    // NEXT round's pre-call — a fan-out with no next round froze the meter at 0%.
+    const reply = new AIMessage({ content: "ok", usage_metadata: { input_tokens: 120_000, output_tokens: 3, total_tokens: 120_003 } } as never);
+    const { engine, session, bus } = await engineWith(fakeModel().respond(reply) as never, "budget-fanout", 262_144, 4_096);
+    const budgets: { percentage: number; usedTokens: number }[] = [];
+    bus.subscribe("CONTEXT_BUDGET_UPDATED", (e) => budgets.push(e.payload as never));
+    await engine.runTurn(session, "go");
+    const settled = budgets.at(-1)!;
+    expect(settled.usedTokens).toBe(120_000);
+    expect(settled.percentage).toBeGreaterThanOrEqual(40); // 120k of ~258k working budget
+  });
+
+  it("the rounded-% dedupe still holds: no two CONTEXT_BUDGET_UPDATED share a percentage (§4.8)", async () => {
+    // The post-call report uses the SAME pipeline instance as the pre-call, so
+    // report()'s rounded-int dedupe carries across the boundary — no event spam.
+    const reply = new AIMessage({ content: "done", usage_metadata: { input_tokens: 50_000, output_tokens: 5, total_tokens: 50_005 } } as never);
+    const { engine, session, bus } = await engineWith(fakeModel().respond(reply) as never, "budget-dedupe", 262_144, 4_096);
+    const budgets: { percentage: number }[] = [];
+    bus.subscribe("CONTEXT_BUDGET_UPDATED", (e) => budgets.push(e.payload as never));
+    await engine.runTurn(session, "go");
+    const pcts = budgets.map((b) => b.percentage);
+    expect(new Set(pcts).size).toBe(pcts.length); // every emitted % is distinct
+  });
 });
 
 describe("Engine — inline <think> reasoning stripped at ingestion (§4.7, invariant 24)", () => {

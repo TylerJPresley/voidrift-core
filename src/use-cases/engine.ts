@@ -2114,7 +2114,7 @@ export class Engine {
           check = result ? validateStructuredValue(schema, result.structuredResponse) : { ok: false as const };
         }
         const safe = result ?? { messages: [] as BaseMessage[], streamedText: "" };
-        this.absorbUsage(session, safe.messages ?? []);
+        this.absorbUsage(session, safe.messages ?? [], pipeline);
         const mapped = this.mapResult(session, safe, start, safe.streamedText);
         if (check.ok) {
           mapped.structured = check.value;
@@ -2133,7 +2133,7 @@ export class Engine {
         return mapped;
       }
       const result = await this.streamAgent(session, agent, { messages: [userMessage] }, this.effectiveRecursionLimit(), options?.signal);
-      this.absorbUsage(session, result.messages ?? []);
+      this.absorbUsage(session, result.messages ?? [], pipeline);
       const mapped = this.mapResult(session, result, start, result.streamedText);
       suspended = mapped.status === "waiting_for_approval";
       return mapped;
@@ -2369,7 +2369,7 @@ export class Engine {
   }
 
   /** Absorb provider usage_metadata — the max input_tokens anchors the budget (§4.8). */
-  private absorbUsage(session: Session, messages: BaseMessage[]): void {
+  private absorbUsage(session: Session, messages: BaseMessage[], pipeline: ContextPipeline): void {
     for (const m of messages) {
       const usage = (m as { usage_metadata?: { input_tokens?: number } }).usage_metadata;
       const input = usage?.input_tokens ?? 0;
@@ -2378,6 +2378,18 @@ export class Engine {
     if (this.turnMaxInputTokens > 0) {
       // Persist the usage anchor in session state (§4.8, §5.1).
       session.usageAnchor = this.turnMaxInputTokens;
+      // §4.8 — re-report occupancy on model-call COMPLETION with the now-known
+      // real input_tokens so the meter updates this round instead of one round
+      // late. During a long fan-out (no next pre-call) the footer would otherwise
+      // freeze at the pre-call estimate. Reports on the SAME pipeline instance as
+      // the pre-call so `report()`'s rounded-% dedupe and the threshold sawtooth
+      // carry over (no event spam, no double-fired crossings). `used` follows the
+      // §4.8 preference order (provider → anchor → estimate), matching wrapModelCall.
+      const snapshot = this.buildSnapshot(session);
+      const { head } = pipeline.buildSystemMessage(snapshot);
+      const frame = pipeline.budgetFrame(head.headTokens);
+      const used = pipeline.resolveUsed({ providerMaxInput: this.turnMaxInputTokens, estimate: 0 });
+      pipeline.report(frame, used);
     }
   }
 
@@ -2395,7 +2407,7 @@ export class Engine {
         this.effectiveRecursionLimit(),
         signal,
       );
-      this.absorbUsage(session, result.messages ?? []);
+      this.absorbUsage(session, result.messages ?? [], pipeline);
       const mapped = this.mapResult(session, result, start, result.streamedText);
       suspended = mapped.status === "waiting_for_approval";
       return mapped;
