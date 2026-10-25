@@ -213,6 +213,16 @@ export function seedSkillsDir(): string {
 }
 
 /**
+ * The absolute path of the package's shipped docs (`<pkg>/docs`,
+ * §12.8), resolved module-relative like {@link seedSkillsDir} so it
+ * points at the same directory from `src/` (vitest) or the installed `dist/`.
+ * Shipped via `package.json` `files`.
+ */
+export function shippedDocsDir(): string {
+  return fileURLToPath(new URL("../docs/", import.meta.url));
+}
+
+/**
  * The HOST-LEVEL `config.init` (core-blueprint.md §13.9.1), usable WITHOUT a
  * full core — no model, no network, no engine. It constructs the SAME
  * `ConfigInit` use-case the `createCore` facade's `config.init` delegates to
@@ -1482,6 +1492,68 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
     manualsGlobalFs,
   );
   const manuals = new Manuals({ bus, toolRegistry: registry, directory: manualsDir });
+
+  // Load shipped core docs (§12.8). Register each *.md under docs/ with
+  // manuals.registerBuiltin(raw, `core/<slug>`) where slug is the basename
+  // without extension. This runs BEFORE manuals.reindex() so core/ ids exist
+  // first. registerBuiltin is silent (no RESOURCE_CHANGED), matching builtin
+  // skills. A malformed doc is an ERROR_OCCURRED, not a crash.
+  let docsDir: string | null = null;
+  try {
+    docsDir = shippedDocsDir();
+  } catch (e) {
+    bus.emit(
+      "ERROR_OCCURRED",
+      {
+        source: "manuals",
+        message: `Failed to resolve shipped docs directory: ${String(e)}`,
+      },
+      {}
+    );
+  }
+  const { readdirSync } = await import("node:fs");
+  const { readFileSync } = await import("node:fs");
+  const registerShippedDocs = (dirPath: string, prefix: string): void => {
+    if (!readdirSync(dirPath, { withFileTypes: true })) return;
+    try {
+      const files = readdirSync(dirPath, { withFileTypes: true });
+      for (const file of files) {
+        if (file.isDirectory()) {
+          // Recursively load from subdirectories like explanation/, guides/, reference/
+          registerShippedDocs(path.join(dirPath, file.name), prefix);
+        } else if (file.isFile() && file.name.endsWith(".md")) {
+          const slug = file.name.replace(/\.md$/, "");
+          const fullPath = path.join(dirPath, file.name);
+          const raw = readFileSync(fullPath, "utf8");
+          const id = `${prefix}/${slug}`;
+          const result = manuals.registerBuiltin(raw, id);
+          if (!result.ok) {
+            bus.emit(
+              "ERROR_OCCURRED",
+              {
+                source: "manuals",
+                message: `Failed to register shipped doc ${id}: ${String(result.error)}`,
+              },
+              {}
+            );
+          }
+        }
+      }
+    } catch (e) {
+      bus.emit(
+        "ERROR_OCCURRED",
+        {
+          source: "manuals",
+          message: `Failed to load shipped docs from ${dirPath}: ${String(e)}`,
+        },
+        {}
+      );
+    }
+  };
+  if (docsDir) {
+    registerShippedDocs(docsDir, "core");
+  }
+
   await manuals.reindex().catch((e) => bus.emit("ERROR_OCCURRED", { source: "manuals", message: String(e) }, {}));
 
   // Start the filesystem watcher for manual hot-reload (§14.2, §14.6). The watcher
