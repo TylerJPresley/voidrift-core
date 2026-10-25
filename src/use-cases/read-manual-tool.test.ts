@@ -154,6 +154,165 @@ describe("read_manual tool (§8.1, §12.8)", () => {
       expect(result.content).not.toContain("Section B");
     });
 
+    describe("section extraction with complex body (AST-based)", () => {
+      it("extracts full section with multiple paragraphs, subsections, and code fences", async () => {
+        const complexDoc = `---
+summary: Complex doc
+read-when: anytime
+type: reference
+---
+
+# Main
+
+## A
+
+First paragraph of A.
+
+Second paragraph of A.
+
+Third paragraph of A.
+
+### sub
+
+Subsection text for sub.
+
+\`\`\`javascript
+// code fence with # not a heading
+const x = 1;
+# this should NOT end the section
+\`\`\`
+
+## B
+
+Content for section B.`;
+
+        manuals.registerBuiltin(complexDoc, "core/complex");
+
+        const tool = readManualTool(manuals);
+        const result = await tool.exec({
+          action: "read",
+          id: "core/complex",
+          headingPath: "## A",
+        }, mockContext);
+
+        expect(result.status).toBe("success");
+        // Should contain all three paragraphs
+        expect(result.content).toContain("First paragraph of A");
+        expect(result.content).toContain("Second paragraph of A");
+        expect(result.content).toContain("Third paragraph of A");
+        // Should contain subsection
+        expect(result.content).toContain("### sub");
+        expect(result.content).toContain("Subsection text for sub");
+        // Should contain full code fence
+        expect(result.content).toContain("```javascript");
+        expect(result.content).toContain("# this should NOT end the section");
+        expect(result.content).toContain("```");
+        // Should NOT contain section B
+        expect(result.content).not.toContain("Content for section B");
+      });
+
+      it("extracts subsection containing only its text", async () => {
+        const complexDoc = `---
+summary: Complex doc
+read-when: anytime
+type: reference
+---
+
+# Main
+
+## A
+
+Content A.
+
+### sub
+
+Subsection text.
+
+## B
+
+Content B.`;
+
+        manuals.registerBuiltin(complexDoc, "core/complex");
+
+        const tool = readManualTool(manuals);
+        const result = await tool.exec({
+          action: "read",
+          id: "core/complex",
+          headingPath: "### sub",
+        }, mockContext);
+
+        expect(result.status).toBe("success");
+        expect(result.content).toContain("### sub");
+        expect(result.content).toContain("Subsection text");
+        // Should NOT contain parent or sibling sections
+        expect(result.content).not.toContain("Content A");
+        expect(result.content).not.toContain("Content B");
+      });
+
+      it("extracts last section in doc (no following heading)", async () => {
+        const complexDoc = `---
+summary: Doc with last section
+read-when: anytime
+type: reference
+---
+
+# Main
+
+## A
+
+Content A.
+
+## B
+
+First line of B.
+
+Second line of B.
+
+Third line of B.`;
+
+        manuals.registerBuiltin(complexDoc, "core/complex");
+
+        const tool = readManualTool(manuals);
+        const result = await tool.exec({
+          action: "read",
+          id: "core/complex",
+          headingPath: "## B",
+        }, mockContext);
+
+        expect(result.status).toBe("success");
+        expect(result.content).toContain("## B");
+        expect(result.content).toContain("First line of B");
+        expect(result.content).toContain("Second line of B");
+        expect(result.content).toContain("Third line of B");
+        expect(result.content).not.toContain("Content A");
+      });
+
+      it("reads '## Verify' section from shipped core/orchestrating-work and verifies it contains body", async () => {
+        // This test uses the actual shipped doc to verify the bug is fixed
+        const fs = await import("fs");
+        const content = fs.readFileSync(
+          new URL("../../docs/explanation/orchestrating-work.md", import.meta.url),
+          "utf-8",
+        );
+        manuals.registerBuiltin(content, "core/orchestrating-work");
+
+        const tool = readManualTool(manuals);
+        const result = await tool.exec({
+          action: "read",
+          id: "core/orchestrating-work",
+          headingPath: "## Verify",
+        }, mockContext);
+
+        expect(result.status).toBe("success");
+        // The bug was that only "## Verify" was returned with no body
+        // This assertion verifies the body is present
+        expect(result.content).toContain("## Verify");
+        expect(result.content).toContain("fresh evidence");
+        // Verify we don't get content from the next section
+        expect(result.content).not.toContain("Reports name what is NOT done");
+      });
+    });
+
     it("wraps plugin-contributed docs in untrusted-data block", async () => {
       manuals.registerBuiltin(pluginManual("my-plugin/guide"), "my-plugin/guide");
 

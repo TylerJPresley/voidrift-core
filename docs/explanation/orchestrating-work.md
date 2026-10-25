@@ -22,6 +22,10 @@ A complex task breaks into the same loop every time. You frame what success look
 
 **Iterate** when verification finds gaps. Fix the weakest point and re-verify only that. If the same fix fails twice, stop and ask why; the map was probably wrong.
 
+## Verify
+
+Check the result against the plan's acceptance criteria with fresh evidence: run the command, read the output, verify the claim. The producer verifies nothing; a separate reviewer (who reads the spec and code, not the builder's report) does the checking. Pick the depth by impact: a small change gets targeted tests plus one full gate run; new subsystems and security work get one independent review; milestones get a check in a real environment. After a fix, re-verify only what changed; do not re-run the whole suite to feel safe.
+
 ## Reports name what is NOT done
 
 A report says: what was done, the evidence (command output, test result, file diff), what was not checked, what needs a decision. A claim of success without evidence is useless. A report that says "should work" instead of "tested" will be sent back.

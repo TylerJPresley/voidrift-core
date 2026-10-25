@@ -30,11 +30,6 @@ export const readManualSchema = z.object({
 
 type ReadManualArgs = z.infer<typeof readManualSchema>;
 
-/** Escape regex special characters. */
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 /** Build a processor for Markdown parsing. */
 function processor() {
   return unified().use(remarkParse);
@@ -276,7 +271,7 @@ async function executeReadManual(
 
     let content = manual.body;
 
-    // If headingPath specified, extract only that section
+    // If headingPath specified, extract only that section using AST
     if (args.headingPath) {
       const headingPath = args.headingPath; // capture for type narrowing
       const proc = processor();
@@ -293,19 +288,41 @@ async function executeReadManual(
         };
       }
 
-      // Simple extraction: find the heading and get content until next heading of same or higher level
+      // Parse heading path to extract depth and text
       const matchResult = headingPath.match(/^#+/);
-      const headingLevel = (matchResult?.[0] ?? "").length;
-      const headingText = headingPath.replace(/^#+\s+/, "");
-      const headingRegex = escapeRegExp(headingText);
-      const pattern = new RegExp(
-        `^${"#".repeat(headingLevel)}\\s+${headingRegex}\\n([\\s\\S]*?)(?=^#{1,${headingLevel}}\\s+|$)`,
-        "m",
-      );
-      const match = pattern.exec(manual.body);
-      if (match) {
-        content = `${headingPath}\n${match[1] ?? ""}`.trim();
-      } else {
+      const targetDepth = (matchResult?.[0] ?? "").length;
+      const targetText = headingPath.replace(/^#+\s+/, "");
+
+      // Walk tree to find target heading and extract content through next heading of same or higher depth
+      let startIdx = -1;
+      let endIdx = tree.children.length;
+
+      for (let i = 0; i < tree.children.length; i++) {
+        const node = tree.children[i];
+        if (node && node.type === "heading") {
+          const heading = node as Heading;
+          // Check if this is our target heading
+          if (startIdx === -1 && heading.depth === targetDepth) {
+            const text = heading.children
+              ?.filter((c) => c.type === "text")
+              .map((c) => (c as Text).value)
+              .join("") ?? "";
+            if (text === targetText) {
+              startIdx = i;
+              continue;
+            }
+          }
+          // If we found the start, look for the next heading of same or higher depth
+          if (startIdx !== -1 && i > startIdx) {
+            if (heading.depth <= targetDepth) {
+              endIdx = i;
+              break;
+            }
+          }
+        }
+      }
+
+      if (startIdx === -1) {
         return {
           content: formatNotFound(
             `failed to extract section "${headingPath}"`,
@@ -314,6 +331,25 @@ async function executeReadManual(
           status: "success",
         };
       }
+
+      // Extract text from start heading through all content until end heading (or end of doc)
+      const startNode = tree.children[startIdx];
+      const endNode = endIdx < tree.children.length ? tree.children[endIdx] : null;
+
+      if (!startNode) {
+        return {
+          content: formatNotFound(
+            `failed to extract section "${headingPath}"`,
+            headings,
+          ),
+          status: "success",
+        };
+      }
+
+      const startOffset = startNode.position?.start.offset ?? 0;
+      const endOffset = endNode?.position?.start.offset ?? manual.body.length;
+
+      content = manual.body.substring(startOffset, endOffset).trim();
     }
 
     // Wrap contributed docs in untrusted-data block
