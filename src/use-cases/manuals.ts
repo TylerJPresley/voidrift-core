@@ -10,6 +10,8 @@ import { ManualRegistry, type ManualIndexLine } from "../entities/manuals/manual
 import type { Manual } from "../entities/manuals/manual.js";
 import { parseManual, ManualValidationError } from "../entities/manuals/manual.js";
 import { coreError, err, ok, ErrorCode, type Result } from "../entities/errors.js";
+import { readManualTool } from "./read-manual-tool.js";
+import type { ToolRegistry } from "../entities/tool-registry.js";
 
 /** A DTO view of a manual (§2, no entity crosses). */
 export interface ManualDTO {
@@ -22,6 +24,8 @@ export interface ManualDTO {
 
 export interface ManualsDeps {
   bus: EventBus;
+  /** Register the model-facing tools through the tool registry (§8.1). */
+  toolRegistry?: ToolRegistry;
 }
 
 export class Manuals {
@@ -29,8 +33,15 @@ export class Manuals {
   /** Builtin manuals registered programmatically (§12.8). */
   private readonly builtins = new Map<string, Manual>();
 
-  // @ts-expect-error deps will be used in later slices for filesystem-sourced manuals
-  constructor(private readonly deps: ManualsDeps) {}
+  constructor(private readonly deps: ManualsDeps) {
+    this.registerTools();
+  }
+
+  private registerTools(): void {
+    if (!this.deps.toolRegistry) return;
+    const { def, exec } = readManualTool(this);
+    this.deps.toolRegistry.register(def, exec);
+  }
 
   /**
    * Register a builtin manual programmatically (§12.8). Plugins use this seam too.
@@ -76,6 +87,13 @@ export class Manuals {
   get(id: string): ManualDTO | null {
     const manual = this.registry.get(id);
     return manual ? this.toDTO(manual) : null;
+  }
+
+  // ── internal access for the read_manual tool (§8.1) ────────────────────────
+
+  /** Get the internal manual object (not DTO) for the tool layer. */
+  getInternal(id: string): Manual | undefined {
+    return this.registry.get(id);
   }
 
   private toDTO(manual: Manual): ManualDTO {

@@ -29,6 +29,7 @@ const ALLOW_TOOLS: string[] = [
   "search_contents",
   "workspace_map",
   "query_logs",
+  "read_manual",
   "list_skills",
   "load_skill",
   "web_fetch",

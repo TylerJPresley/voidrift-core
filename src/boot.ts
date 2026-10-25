@@ -1470,7 +1470,7 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
   // Manuals: the append-only registry for the manual (§12.8). Programmatic
   // registration emits nothing (like builtin skills). No filesystem watcher
   // this pass; RESOURCE_CHANGED from filesystem-sourced docs is a later slice.
-  const manuals = new Manuals({ bus });
+  const manuals = new Manuals({ bus, toolRegistry: registry });
 
   // An approved skill candidate becomes a workspace skill (§6.7, §12.1): the core
   // never writes a skill on its own — only approval (the human decision) does.
