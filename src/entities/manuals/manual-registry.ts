@@ -29,6 +29,13 @@ export class ManualRegistry {
   }
 
   /**
+   * Remove a manual by id (used during re-indexing to clear filesystem layers).
+   */
+  remove(id: string): void {
+    this.manuals.delete(id);
+  }
+
+  /**
    * Get a manual by id, or undefined if not found.
    */
   get(id: string): Manual | undefined {
