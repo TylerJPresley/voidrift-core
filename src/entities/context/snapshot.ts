@@ -22,6 +22,15 @@ export interface SkillManifestLine {
   description: string;
 }
 
+/** A manifest entry for the manual TOC (§12.8) — rendered one line per doc. */
+export interface ManualManifestLine {
+  id: string;
+  summary: string;
+  readWhen: string;
+  /** True when the doc is contributed (not core/ or cli/). */
+  contributed: boolean;
+}
+
 /** A memory-index line (§4.6, §6.2) — one line per agent-written entry carrying
  * its one-line `summary`, surfaced in full by keyword or by id. */
 export interface ReferenceMemoryLine {
@@ -67,6 +76,8 @@ export interface ContextSnapshot {
   documents: DocumentManifestLine[];
   /** The skills index manifest (§12.1, tier 3). */
   skills: SkillManifestLine[];
+  /** The manual table of contents manifest (§12.8, tier 3). */
+  manuals: ManualManifestLine[];
   /** The reference-memory index (§6.2, tier 3). */
   referenceMemory: ReferenceMemoryLine[];
   /** Registered agent-provider content (plugins/capabilities), Agent layer. */
@@ -89,6 +100,7 @@ export function emptySnapshot(environment: EnvironmentFacts): ContextSnapshot {
     digests: [],
     documents: [],
     skills: [],
+    manuals: [],
     referenceMemory: [],
     agentProviderBlocks: [],
     voidProviderBlocks: [],

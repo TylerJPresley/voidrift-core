@@ -220,6 +220,8 @@ export interface EngineDeps {
   memory?: MemoryContextSource;
   /** The Skills capability (§12.1) — wires the Void-layer skills seam (§4.6). */
   skills?: SkillContextSource;
+  /** The Manuals capability (§12.8) — wires the Void-layer manual TOC seam (§4.6). */
+  manuals?: ManualContextSource;
   /** Registered void-layer context-provider blocks (§4, §12.4). */
   voidProviders?: () => string[];
   /** The session's active top-level agent (§2.7), resolved LIVE per turn so a
@@ -331,6 +333,15 @@ export interface SkillContextSource {
   loadedBodies(): string[];
   /** The model-facing tools (list_skills, load_skill) to bind to the agent (§8.1). */
   modelTools(): { def: { name: string; description: string; schema: unknown }; exec: (args: unknown, ctx: { workspaceRoot: string; sessionId: string }) => Promise<{ content: string; status: string }> }[];
+}
+
+/**
+ * The read surface the engine uses to wire the Void-layer manual TOC seam (§4.6,
+ * §12.8): the index manifest (id + summary + readWhen + contributed) for the
+ * head. The Manuals use-case satisfies it.
+ */
+export interface ManualContextSource {
+  indexLines(): { id: string; summary: string; readWhen: string; contributed: boolean }[];
 }
 
 /**
@@ -1382,6 +1393,13 @@ export class Engine {
       snap.skills = skillsSrc.indexLines();
       // Loaded skill bodies render `### <name>` + body into the Void layer.
       for (const body of skillsSrc.loadedBodies()) snap.voidProviderBlocks.push(body);
+    }
+
+    // ── Void-layer manual TOC seam (§4.6, §12.8) ──────────────────────────────
+    const manualsSrc = this.deps.manuals;
+    if (manualsSrc) {
+      // The index manifest: id + summary + readWhen + contributed (one line per doc).
+      snap.manuals = manualsSrc.indexLines();
     }
 
     // Registered void-layer context-provider blocks (plugins/capabilities, §4).

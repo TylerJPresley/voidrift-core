@@ -46,6 +46,9 @@ function full(): ContextSnapshot {
   s.documents = [{ name: "a.ts", path: "src/a.ts", size: 10, trust: "live", stale: false }];
   s.skills = [{ name: "review", description: "review code" }];
   s.referenceMemory = [{ key: "api-notes", summary: "REST API conventions", keywords: ["api", "rest"] }];
+  s.manuals = [
+    { id: "core/orchestrating-work", summary: "Orchestrating work", readWhen: "when planning", contributed: false },
+  ];
   s.voidProviderBlocks = ["plan: 2/5 tasks done"];
   s.turnMetadataBlocks = ["Injected: focus on §4"];
   return s;
@@ -115,5 +118,85 @@ describe("head assembly (§4.2.1, §4.3)", () => {
     expect(head.tierSplit.inline).toBeGreaterThan(0);
     expect(head.tierSplit.digest).toBeGreaterThan(0);
     expect(head.tierSplit.manifest).toBeGreaterThan(0);
+  });
+});
+
+describe("Manual section in the head (§12.8, §4.6)", () => {
+  it("renders the Manual section with readWhen and [contributed] suffix for non-core/cli docs", () => {
+    const s = emptySnapshot(env);
+    s.manuals = [
+      { id: "core/orchestrating-work", summary: "Orchestrating work", readWhen: "when planning", contributed: false },
+      { id: "cli/commands", summary: "CLI commands", readWhen: "before using the CLI", contributed: false },
+      { id: "plugin-foo/guide", summary: "Foo guide", readWhen: "when using plugin-foo", contributed: true },
+    ];
+    const head = assembleHead(s, 1600);
+    const voidB = head.blocks.find((b) => b.layer === "void")!;
+    expect(voidB.text).toContain("Manual:");
+    expect(voidB.text).toContain("- core/orchestrating-work: Orchestrating work Read when: when planning");
+    expect(voidB.text).toContain("- cli/commands: CLI commands Read when: before using the CLI");
+    expect(voidB.text).toContain("- plugin-foo/guide: Foo guide Read when: when using plugin-foo [contributed]");
+  });
+
+  it("omits the Manual section when the manifest is empty", () => {
+    const s = emptySnapshot(env);
+    s.manuals = [];
+    s.skills = []; // Also empty skills so there's a void block but no Manual section
+    s.documents = [{ name: "a.ts", path: "src/a.ts", size: 10, trust: "live", stale: false }]; // Keep docs so void block exists
+    const head = assembleHead(s, 1600);
+    const voidB = head.blocks.find((b) => b.layer === "void")!;
+    expect(voidB.text).not.toContain("Manual:");
+  });
+
+  it("truncates the Manual manifest with a note under the manifest cap", () => {
+    const s = emptySnapshot(env);
+    s.manuals = Array.from({ length: 20 }, (_, i) => ({
+      id: `core/doc-${i}`,
+      summary: `Doc ${i}`,
+      readWhen: `when doing ${i}`,
+      contributed: false,
+    }));
+    const head = assembleHead(s, 60);
+    expect(head.degraded).toBe(true);
+    const voidB = head.blocks.find((b) => b.layer === "void")!;
+    expect(voidB.text).toContain("… (");
+    expect(voidB.text).toContain("more truncated to fit the head budget)");
+  });
+
+  it("collapses newlines in summary and readWhen to prevent header injection", () => {
+    const s = emptySnapshot(env);
+    s.manuals = [
+      {
+        id: "core/test",
+        summary: "Test\ndoc\nwith\nnewlines",
+        readWhen: "when\nneeded",
+        contributed: false,
+      },
+    ];
+    const head = assembleHead(s, 1600);
+    const voidB = head.blocks.find((b) => b.layer === "void")!;
+    // Newlines should be collapsed to single spaces
+    expect(voidB.text).toContain("- core/test: Test doc with newlines Read when: when needed");
+    expect(voidB.text).not.toContain("newlines\n");
+  });
+
+  it("collapses all Unicode line breaks (\\r, \\u2028, \\u2029, \\u0085) in the Manual section", () => {
+    const s = emptySnapshot(env);
+    s.manuals = [
+      {
+        id: "core/test",
+        summary: "Test\rdoc\u2028with\u2029breaks\u0085here",
+        readWhen: "when\rneeded",
+        contributed: false,
+      },
+    ];
+    const head = assembleHead(s, 1600);
+    const voidB = head.blocks.find((b) => b.layer === "void")!;
+    // All line breaks should be collapsed to single spaces
+    expect(voidB.text).toContain("- core/test: Test doc with breaks here Read when: when needed");
+    // Ensure no extra line breaks exist in the rendered text
+    const lines = voidB.text.split("\n");
+    const manualLine = lines.find((l) => l.includes("core/test"));
+    expect(manualLine).toBeDefined();
+    expect(manualLine!.includes("\r")).toBe(false);
   });
 });

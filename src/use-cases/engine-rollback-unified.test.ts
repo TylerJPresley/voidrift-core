@@ -179,7 +179,7 @@ describe("§10.12 — unified traversal over mixed moves", () => {
 function foldSeed() {
   return {
     ...seed(),
-    models: { t: { model: "t", protocol: "openai", contextLimit: 4000 } },
+    models: { t: { model: "t", protocol: "openai", contextLimit: 5000 } },
     contextActiveBudgetPct: 1,
     contextCompactionPct: 2,
   };

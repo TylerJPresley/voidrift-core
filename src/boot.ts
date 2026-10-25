@@ -1145,6 +1145,7 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
       endpointPercents,
       memory,
       skills,
+      manuals,
       mcpReady,
       voidProviders: () => {
         // §4.2 / §9.6 — the Warden policy text goes into protected (void-layer)

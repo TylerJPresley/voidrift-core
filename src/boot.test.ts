@@ -135,4 +135,34 @@ describe("createCore default wiring (§2.1)", () => {
     expect(created.ok).toBe(true);
     await api.session.shutdown();
   });
+
+  it("boots with shipped core docs in the head; orchestrating-work manual appears in model requests", async () => {
+    const model = fakeModel().respond(new AIMessage("ok"));
+    const { api } = await createCore({
+      workspaceRoot: ws,
+      chatModelFactory: () => model,
+    });
+    const session = await api.session.create({});
+    expect(session.ok).toBe(true);
+    if (!session.ok) return;
+    const sessionId = session.value.id;
+
+    // Send a message to trigger a model call with the head
+    await api.session.send(sessionId, { input: "test", approvalMode: "policy_only" });
+
+    // The model.calls contain the full message history with the head.
+    // Assert the head includes the core/orchestrating-work manual entry.
+    expect(model.calls.length).toBeGreaterThan(0);
+    const firstCall = model.calls[0]!;
+    const headMessages = firstCall.messages
+      .map((m) => (typeof m.content === "string" ? m.content : JSON.stringify(m.content)))
+      .join("\n");
+    
+    // The Manual section lists each manual with id, summary, and readWhen
+    const expectedManualLine = "- core/orchestrating-work: How to drive multi-step work to a verified result. Read when: before planning multi-step work or dispatching workers.";
+    expect(headMessages).toContain(expectedManualLine);
+    expect(headMessages).toContain("Manual:");
+
+    await api.session.shutdown();
+  });
 });

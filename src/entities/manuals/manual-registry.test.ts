@@ -56,14 +56,14 @@ describe("ManualRegistry (§12.8)", () => {
     expect(r.get("unknown/doc")).toBeUndefined();
   });
 
-  it("provides an index of id + summary + type for TOC generation", () => {
+  it("provides an index of id + summary + readWhen + contributed for TOC generation", () => {
     const r = new ManualRegistry();
     r.register(manual("core/intro", "builtin", "Getting started", "before first use"));
     r.register(manual("cli/ref", "builtin", "CLI reference", "when using CLI"));
     const index = r.indexLines();
     expect(index).toEqual([
-      { id: "core/intro", summary: "Getting started", type: "reference" },
-      { id: "cli/ref", summary: "CLI reference", type: "reference" },
+      { id: "core/intro", summary: "Getting started", type: "reference", readWhen: "before first use", contributed: false },
+      { id: "cli/ref", summary: "CLI reference", type: "reference", readWhen: "when using CLI", contributed: false },
     ]);
   });
 });

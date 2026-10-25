@@ -115,6 +115,8 @@ Start here.`;
       id: expect.any(String),
       summary: "Test doc",
       type: "reference",
+      readWhen: "anytime",
+      contributed: false,
     });
   });
 

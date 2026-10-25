@@ -22,6 +22,7 @@ import {
   type DigestPointer,
   type SkillManifestLine,
   type ReferenceMemoryLine,
+  type ManualManifestLine,
 } from "./snapshot.js";
 import { renderMetaBlock } from "./meta-block.js";
 
@@ -117,6 +118,20 @@ function docLines(docs: DocumentManifestLine[]): string[] {
   return docs.map(renderManifestLine);
 }
 
+/** Collapse newlines to single spaces in text to prevent header injection (§12.8). */
+function collapseNewlines(text: string): string {
+  return text.replace(/[\r\n\u2028\u2029\u0085]+/g, " ");
+}
+
+function manualLines(manuals: ManualManifestLine[]): string[] {
+  return manuals.map((m) => {
+    const summary = collapseNewlines(m.summary);
+    const readWhen = collapseNewlines(m.readWhen);
+    const contrib = m.contributed ? " [contributed]" : "";
+    return `- ${m.id}: ${summary} Read when: ${readWhen}${contrib}`;
+  });
+}
+
 /**
  * Assemble the head within `headCap` tokens (§4.2.1). Builds the Agent and Void
  * layers, measures them, and if over the cap degrades lower tiers first: shorten
@@ -143,8 +158,9 @@ export function assembleHead(
     const voidParts: string[] = [];
     const docM = renderManifest("Documents", docLines(snapshot.documents), manifestLimit);
     const skillM = renderManifest("Skills", skillLines(snapshot.skills), manifestLimit);
+    const manualM = renderManifest("Manual", manualLines(snapshot.manuals), manifestLimit);
     const refM = renderManifest("Memory index", refMemoryLines(snapshot.referenceMemory), manifestLimit);
-    for (const m of [docM, skillM, refM]) if (m) voidParts.push(m);
+    for (const m of [docM, skillM, manualM, refM]) if (m) voidParts.push(m);
     for (const b of snapshot.voidProviderBlocks) voidParts.push(b);
     const voidText = join(voidParts);
     // Digests ride the Agent layer in tier order; keep them with the agent block.

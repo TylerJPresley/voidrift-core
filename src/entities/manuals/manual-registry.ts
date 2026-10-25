@@ -12,6 +12,10 @@ export interface ManualIndexLine {
   id: string;
   summary: string;
   type: Manual["frontmatter"]["type"];
+  /** Moment to read this doc (from frontmatter). */
+  readWhen: string;
+  /** True if the doc is contributed (id does not start with core/ or cli/). */
+  contributed: boolean;
 }
 
 export class ManualRegistry {
@@ -50,13 +54,15 @@ export class ManualRegistry {
   }
 
   /**
-   * Get the index manifest for TOC generation: id + summary + type.
+   * Get the index manifest for TOC generation: id + summary + readWhen + contributed.
    */
   indexLines(): ManualIndexLine[] {
     return Array.from(this.manuals.values()).map((m) => ({
       id: m.id,
       summary: m.frontmatter.summary,
       type: m.frontmatter.type,
+      readWhen: m.frontmatter.readWhen,
+      contributed: !m.id.startsWith("core/") && !m.id.startsWith("cli/"),
     }));
   }
 
