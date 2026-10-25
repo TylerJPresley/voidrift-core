@@ -54,6 +54,7 @@ import { RollbackService } from "./use-cases/rollback.js";
 import type { SnapshotStore } from "./entities/ports/snapshot-store.js";
 import { FetchHttpAdapter } from "./adapters/http-fetch.js";
 import { Skills } from "./use-cases/skills.js";
+import { Manuals } from "./use-cases/manuals.js";
 import { Prompts } from "./use-cases/prompts.js";
 import { Plugins, type CoreServices, type PluginCommandHandler } from "./use-cases/plugins.js";
 import { SkillsDirectory } from "./adapters/skills-directory.js";
@@ -1466,6 +1467,11 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
   });
   await skills.reindex().catch((e) => bus.emit("ERROR_OCCURRED", { source: "skills", message: String(e) }, {}));
 
+  // Manuals: the append-only registry for the manual (§12.8). Programmatic
+  // registration emits nothing (like builtin skills). No filesystem watcher
+  // this pass; RESOURCE_CHANGED from filesystem-sourced docs is a later slice.
+  const manuals = new Manuals({ bus });
+
   // An approved skill candidate becomes a workspace skill (§6.7, §12.1): the core
   // never writes a skill on its own — only approval (the human decision) does.
   // The WHOLE directory — SKILL.md plus every validated asset — is written under
@@ -2043,6 +2049,7 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
     autoApproveAllowed: () => managedLayer.autoApproveAllowed(),
     memory,
     skills,
+    manuals,
     prompts,
     plugins,
     registryStore,

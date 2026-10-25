@@ -251,6 +251,8 @@ export interface FacadeDeps {
   memory: Memory;
   /** The Skills capability (§12.1), constructed by boot. */
   skills: Skills;
+  /** The Manuals capability (§12.8), constructed by boot. */
+  manuals: import("./use-cases/manuals.js").Manuals;
   /** The Prompts capability (§12.2), constructed by boot. */
   prompts: Prompts;
   /** The Plugins capability (§12.4), constructed by boot. */
@@ -1622,6 +1624,10 @@ export class CoreAPI {
       // An exporter receives each masked ObsRecord as it is written (§10.8); a
       // thrower is isolated and the local trail is written regardless.
       this.deps.registerExporter(exporter as import("./entities/observability/obs-record.js").ObsExporter);
+    },
+    manual: (raw: string, id: string): CoreError | void => {
+      const res = this.deps.manuals.registerBuiltin(raw, id);
+      if (!res.ok) return res.error;
     },
   };
 
