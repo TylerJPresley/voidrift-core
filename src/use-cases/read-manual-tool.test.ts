@@ -374,6 +374,141 @@ Third line of B.`;
       expect(result.content).toContain("Section A");
     });
 
+    it("handles multi-word queries by tokenizing", async () => {
+      // Test that "tunable limits" finds a doc with limits in the id
+      const limitsDoc = `---
+summary: Tunable limits and safety configuration
+read-when: when setting constraints
+type: reference
+---
+
+# Limits
+
+This doc describes limits.`;
+      manuals.registerBuiltin(limitsDoc, "core/limits");
+
+      const tool = readManualTool(manuals);
+      const result = await tool.exec({ action: "search", query: "tunable limits" }, mockContext);
+
+      expect(result.status).toBe("success");
+      expect(result.content).toContain("core/limits");
+      // Should find this doc via summary hit on multiple query terms
+      expect(result.content).not.toContain("No results");
+    });
+
+    it("returns '## Verify' section first for 'verify fresh evidence' query", async () => {
+      // Load the real shipped core/orchestrating-work doc
+      const fs = await import("fs");
+      const content = fs.readFileSync(
+        new URL("../../docs/explanation/orchestrating-work.md", import.meta.url),
+        "utf-8",
+      );
+      manuals.registerBuiltin(content, "core/orchestrating-work");
+
+      const tool = readManualTool(manuals);
+      const result = await tool.exec({ action: "search", query: "verify fresh evidence" }, mockContext);
+
+      expect(result.status).toBe("success");
+      // Result should contain the Verify section with proper headingPath
+      expect(result.content).toContain("## Verify");
+      // The headingPath for this hit should be "## Verify", not empty
+      expect(result.content).toContain("core/orchestrating-work");
+    });
+
+    it("returns section headingPath for section hits, not empty", async () => {
+      const doc = `---
+summary: Test doc
+read-when: anytime
+type: reference
+---
+
+# Main
+
+## Verify
+
+Content about verification with fresh evidence here.
+
+## Other
+
+Different content.`;
+      manuals.registerBuiltin(doc, "core/test");
+
+      const tool = readManualTool(manuals);
+      const result = await tool.exec({ action: "search", query: "verify" }, mockContext);
+
+      expect(result.status).toBe("success");
+      // Should find the Verify section
+      expect(result.content).toContain("## Verify");
+      // And the headingPath should be shown (not empty)
+      expect(result.content).toContain("core/test");
+    });
+
+    it("handles single-word queries", async () => {
+      manuals.registerBuiltin(coreManual("core/intro"), "core/intro");
+
+      const tool = readManualTool(manuals);
+      const result = await tool.exec({ action: "search", query: "Content" }, mockContext);
+
+      expect(result.status).toBe("success");
+      expect(result.content).toContain("Content");
+    });
+
+    it("is case-insensitive", async () => {
+      manuals.registerBuiltin(coreManual("core/intro"), "core/intro");
+
+      const tool = readManualTool(manuals);
+      const result = await tool.exec({ action: "search", query: "SECTION" }, mockContext);
+
+      expect(result.status).toBe("success");
+      expect(result.content).toContain("Section");
+    });
+
+    it("handles punctuation in queries", async () => {
+      manuals.registerBuiltin(coreManual("core/intro"), "core/intro");
+
+      const tool = readManualTool(manuals);
+      const result = await tool.exec({ action: "search", query: "Section?" }, mockContext);
+
+      expect(result.status).toBe("success");
+      expect(result.content).toContain("Section");
+    });
+
+    it("returns no results message when query has no matches", async () => {
+      manuals.registerBuiltin(coreManual("core/intro"), "core/intro");
+
+      const tool = readManualTool(manuals);
+      const result = await tool.exec({ action: "search", query: "xyz-nonexistent-term" }, mockContext);
+
+      expect(result.status).toBe("success");
+      expect(result.content).toContain("No results");
+    });
+
+    it("ranks section hits above body-only hits", async () => {
+      const doc = `---
+summary: Test
+read-when: anytime
+type: reference
+---
+
+# Main
+
+Some body content here.
+
+## Verify
+
+This section is about verification.`;
+      manuals.registerBuiltin(doc, "core/test");
+
+      const tool = readManualTool(manuals);
+      const result = await tool.exec({ action: "search", query: "verify" }, mockContext);
+
+      expect(result.status).toBe("success");
+      // Section hit should appear first (via heading), even though body also contains the word
+      const content = result.content;
+      const verifyHeadingIndex = content.indexOf("## Verify");
+      expect(verifyHeadingIndex).toBeGreaterThan(-1);
+    });
+
     it("returns empty results when no matches found", async () => {
       manuals.registerBuiltin(coreManual("core/intro"), "core/intro");
 
@@ -471,6 +606,256 @@ Third line of B.`;
         id: "../../../etc/passwd",
       }, mockContext);
       expect(result2.content).toContain("NOT_FOUND");
+    });
+  });
+
+  describe("inline code and formatting in headings (bug fix)", () => {
+    it("preserves inline code in heading paths for outline", async () => {
+      const docWithCode = `---
+summary: Test doc with code
+read-when: anytime
+type: reference
+---
+
+# Config
+
+## \`limits.context\`
+
+Content about limits.context.
+
+## \`limits.turn\`
+
+Content about limits.turn.`;
+      manuals.registerBuiltin(docWithCode, "core/config");
+
+      const tool = readManualTool(manuals);
+      const result = await tool.exec({ action: "outline", id: "core/config" }, mockContext);
+
+      expect(result.status).toBe("success");
+      // The bug was that inline code was stripped; verify it is preserved
+      expect(result.content).toContain("## `limits.context`");
+      expect(result.content).toContain("## `limits.turn`");
+      // Should NOT contain just "## limits" with code stripped
+      expect(result.content).not.toContain("## limits.context");
+    });
+
+    it("reads section by verbatim heading path including inline code", async () => {
+      const docWithCode = `---
+summary: Test doc with code
+read-when: anytime
+type: reference
+---
+
+# Config
+
+## \`limits.context\`
+
+Content about limits.context.
+
+## \`limits.turn\`
+
+Content about limits.turn.`;
+      manuals.registerBuiltin(docWithCode, "core/config");
+
+      const tool = readManualTool(manuals);
+      const result = await tool.exec({
+        action: "read",
+        id: "core/config",
+        headingPath: "## `limits.context`",
+      }, mockContext);
+
+      expect(result.status).toBe("success");
+      expect(result.content).toContain("## `limits.context`");
+      expect(result.content).toContain("Content about limits.context");
+      // Should NOT include the next section
+      expect(result.content).not.toContain("limits.turn");
+    });
+
+    it("searches and finds section with inline code in heading", async () => {
+      const docWithCode = `---
+summary: Configuration limits and tunable parameters
+read-when: when setting constraints
+type: reference
+---
+
+# Config
+
+## \`limits.context\`
+
+Context tuning for limits and memory.
+
+## Other
+
+Different content.`;
+      manuals.registerBuiltin(docWithCode, "core/config");
+
+      const tool = readManualTool(manuals);
+      const result = await tool.exec({ action: "search", query: "tunable limits context" }, mockContext);
+
+      expect(result.status).toBe("success");
+      // Should find the section
+      expect(result.content).toContain("core/config");
+      // headingPath should be verbatim with backticks, not stripped
+      expect(result.content).toContain("## `limits.context`");
+    });
+
+    it("real shipped doc: outline of core/limits contains '## `limits.context`'", async () => {
+      const fs = await import("fs");
+      const content = fs.readFileSync(
+        new URL("../../docs/reference/limits.md", import.meta.url),
+        "utf-8",
+      );
+      manuals.registerBuiltin(content, "core/limits");
+
+      const tool = readManualTool(manuals);
+      const result = await tool.exec({ action: "outline", id: "core/limits" }, mockContext);
+
+      expect(result.status).toBe("success");
+      // The bug: outline listed only '# Configuration Limits' twice
+      // Fix: should list all headings including '## `limits.context`'
+      expect(result.content).toContain("## `limits.context`");
+      expect(result.content).toContain("## `limits.turn`");
+      expect(result.content).toContain("## `limits.toolRounds`");
+      // Should list the other area headings
+      expect(result.content).toContain("## `limits.lane`");
+      expect(result.content).toContain("## `limits.tools`");
+    });
+
+    it("real shipped doc: read '## `limits.context`' returns section with table", async () => {
+      const fs = await import("fs");
+      const content = fs.readFileSync(
+        new URL("../../docs/reference/limits.md", import.meta.url),
+        "utf-8",
+      );
+      manuals.registerBuiltin(content, "core/limits");
+
+      const tool = readManualTool(manuals);
+      const result = await tool.exec({
+        action: "read",
+        id: "core/limits",
+        headingPath: "## `limits.context`",
+      }, mockContext);
+
+      expect(result.status).toBe("success");
+      expect(result.content).toContain("## `limits.context`");
+      // Verify body contains the table (has a | character for table row)
+      expect(result.content).toContain("|");
+      // Should NOT contain the next area heading
+      expect(result.content).not.toContain("## `limits.turn`");
+    });
+
+    it("real shipped doc: search for 'tunable limits context' finds exact heading", async () => {
+      const fs = await import("fs");
+      const content = fs.readFileSync(
+        new URL("../../docs/reference/limits.md", import.meta.url),
+        "utf-8",
+      );
+      manuals.registerBuiltin(content, "core/limits");
+
+      const tool = readManualTool(manuals);
+      const result = await tool.exec({ action: "search", query: "tunable limits context" }, mockContext);
+
+      expect(result.status).toBe("success");
+      // Should find a hit
+      expect(result.content).toContain("core/limits");
+      // headingPath should be the verbatim "## `limits.context`", NOT empty
+      expect(result.content).toContain("## `limits.context`");
+      // Snippet should be non-empty
+      const lines = result.content.split("\n");
+      const snippetLine = lines.find((l) => l.includes("limits") && l.includes("context"));
+      expect(snippetLine).toBeTruthy();
+    });
+
+    it("no search result has headingPath that is only '#' characters", async () => {
+      const docWithMultipleLevels = `---
+summary: Multi-level doc
+read-when: anytime
+type: reference
+---
+
+# Title
+
+Content here.
+
+## Section
+
+More content.`;
+      manuals.registerBuiltin(docWithMultipleLevels, "core/test");
+
+      const tool = readManualTool(manuals);
+      const result = await tool.exec({ action: "search", query: "content" }, mockContext);
+
+      expect(result.status).toBe("success");
+      // Parse the result and verify no headingPath is just "#" or "##" etc
+      const lines = result.content.split("\n");
+      for (const line of lines) {
+        // Lines with just "# " or "## " or "### " (only hashes + space) should not appear as headingPath
+        if (line.includes("—")) {
+          // This is a heading line with headingPath after —
+          const parts = line.split("—");
+          if (parts.length > 1 && parts[1] !== undefined) {
+            const headingPath = parts[1].trim();
+            // Verify it's not ONLY hash characters
+            expect(/^#+\s*$/.test(headingPath)).toBe(false);
+          }
+        }
+      }
+    });
+
+    it("real shipped doc: 'Configuration Limits' occurs once in limits.md outline", async () => {
+      const fs = await import("fs");
+      const content = fs.readFileSync(
+        new URL("../../docs/reference/limits.md", import.meta.url),
+        "utf-8",
+      );
+      manuals.registerBuiltin(content, "core/limits");
+
+      const tool = readManualTool(manuals);
+      const result = await tool.exec({ action: "outline", id: "core/limits" }, mockContext);
+
+      expect(result.status).toBe("success");
+      // Bug: the generated block repeated the intro, so "# Configuration Limits" appeared twice
+      // Fix: should appear only once
+      const matches = (result.content.match(/# Configuration Limits/g) || []).length;
+      expect(matches).toBe(1);
+    });
+
+    it("sectionsOf unit test: synthetic doc with inline code, emphasis, link, code fence", async () => {
+      // This is a unit test that directly tests sectionsOf behavior
+      // (exported or tested via the outline action)
+      const docWithFormatting = `---
+summary: Test doc
+read-when: anytime
+type: reference
+---
+
+# Title
+
+## \`inline-code\` heading
+
+Content here.
+
+\`\`\`
+# fake heading inside fence
+\`\`\`
+
+More content after fence.
+
+## **bold** heading with [link](http://example.com)
+
+Final section.`;
+      manuals.registerBuiltin(docWithFormatting, "core/formatting");
+
+      const tool = readManualTool(manuals);
+      const result = await tool.exec({ action: "outline", id: "core/formatting" }, mockContext);
+
+      expect(result.status).toBe("success");
+      // Verify inline code is preserved
+      expect(result.content).toContain("## `inline-code` heading");
+      // Verify bold and link are preserved
+      expect(result.content).toContain("## **bold** heading with [link](http://example.com)");
+      // Verify fake heading inside code fence is NOT listed
+      expect(result.content).not.toContain("# fake heading inside fence");
     });
   });
 

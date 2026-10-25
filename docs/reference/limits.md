@@ -14,14 +14,6 @@ audit/restore guarantee, so lowering it from an untrusted project config is igno
 
 <!-- BEGIN (generated) -->
 
-# Configuration Limits
-
-VoidRift has **98** configurable limits across **23** areas. Each is a
-key under `limits.<area>.<name>`; a `tunable` limit follows the normal cascade (the
-narrower layer wins), a `safety` limit may only be *lowered* by a project/session layer,
-and an `integrity` limit may only be *raised* by a project/session layer (it protects an
-audit/restore guarantee, so lowering it from an untrusted project config is ignored).
-
 ## `limits.context`
 
 | Key | Unit | Class | Meaning |

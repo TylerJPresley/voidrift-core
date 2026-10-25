@@ -16,7 +16,7 @@
 import { z } from "zod";
 import { unified } from "unified";
 import remarkParse from "remark-parse";
-import type { Root, Heading, Text, RootContent } from "mdast";
+import type { Heading } from "mdast";
 import { stripUnsafeCharsKeepWhitespace } from "../entities/untrusted-text.js";
 import type { Manuals } from "./manuals.js";
 import type { ToolDefinition, ToolExecutor, ToolContext } from "../entities/tool-registry.js";
@@ -35,28 +35,63 @@ function processor() {
   return unified().use(remarkParse);
 }
 
-/** Extract all headings from an mdast tree. */
-function extractHeadings(tree: Root): string[] {
-  const headings: string[] = [];
-  const visit = (node: RootContent) => {
-    if (node.type === "heading") {
-      const heading = node as Heading;
-      const depth = heading.depth ?? 0;
-      const prefix = "#".repeat(depth);
-      const text = heading.children
-        ?.filter((c) => c.type === "text")
-        .map((c) => (c as Text).value)
-        .join("") ?? "";
-      if (text) {
-        headings.push(`${prefix} ${text}`);
+/**
+ * Extract sections from a manual body using AST parsing.
+ * Returns an array of sections with verbatim headingPath (from source position),
+ * section boundaries, and body text.
+ * This is the ONE shared helper used by outline, read, and search.
+ */
+interface Section {
+  headingPath: string; // Verbatim heading line from source (e.g., "## `limits.context`")
+  depth: number; // Heading depth (1-6)
+  start: number; // Start offset of the heading in the body
+  end: number; // End offset of this section (start of next heading at same/higher depth, or EOF)
+  bodyStart: number; // Offset where section content begins (after heading line + newline)
+}
+
+function sectionsOf(body: string): Section[] {
+  const proc = processor();
+  const tree = proc.parse(body);
+  const sections: Section[] = [];
+
+  for (let i = 0; i < tree.children.length; i++) {
+    const node = tree.children[i];
+    if (!node || node.type !== "heading") continue;
+
+    const heading = node as Heading;
+    const depth = heading.depth ?? 1;
+    const startOffset = node.position?.start.offset ?? 0;
+    const endOffset = node.position?.end.offset ?? 0;
+
+    // Extract verbatim heading line from source: "## `limits.context`"
+    const headingPath = body.slice(startOffset, endOffset);
+
+    // Find the end of this section: start of next heading with depth <= this depth
+    let sectionEnd = body.length;
+    for (let j = i + 1; j < tree.children.length; j++) {
+      const nextNode = tree.children[j];
+      if (nextNode?.type === "heading") {
+        const nextHeading = nextNode as Heading;
+        if ((nextHeading.depth ?? 1) <= depth) {
+          sectionEnd = nextNode.position?.start.offset ?? body.length;
+          break;
+        }
       }
     }
-    if ("children" in node && node.children) {
-      node.children.forEach(visit);
-    }
-  };
-  tree.children.forEach(visit);
-  return headings;
+
+    // Body starts after the heading line (after the newline)
+    const bodyStart = endOffset + (body[endOffset] === "\n" ? 1 : 0);
+
+    sections.push({
+      headingPath,
+      depth,
+      start: startOffset,
+      end: sectionEnd,
+      bodyStart,
+    });
+  }
+
+  return sections;
 }
 
 
@@ -80,17 +115,15 @@ function formatToc(manuals: Manuals): string {
 }
 
 /** Format outline output: heading tree. */
-function formatOutline(tree: Root): string {
-  const headings = extractHeadings(tree);
-  if (headings.length === 0) {
+function formatOutline(body: string): string {
+  const sections = sectionsOf(body);
+  if (sections.length === 0) {
     return "No headings found.";
   }
   const lines = ["## Outline"];
-  headings.forEach((h) => {
-    const matchResult = h.match(/^#+/);
-    const depth = (matchResult?.[0] ?? "").length;
-    const indent = "  ".repeat(depth - 1);
-    lines.push(`${indent}${h}`);
+  sections.forEach((s) => {
+    const indent = "  ".repeat(s.depth - 1);
+    lines.push(`${indent}${s.headingPath}`);
   });
   return lines.join("\n");
 }
@@ -133,72 +166,164 @@ function formatSearchResults(results: Array<{ id: string; headingPath: string; s
   return lines.join("\n");
 }
 
-/** Search across all manuals for matching sections. Simple in-process index. */
-function searchManuals(manuals: Manuals, query: string): Array<{ id: string; headingPath: string; snippet: string }> {
-  const queryLower = query.toLowerCase();
-  const results: Array<{ id: string; headingPath: string; snippet: string; score: number }> = [];
+/**
+ * Extract sections from a manual body using AST parsing.
+ * Returns an array of sections, each with heading, body text, and metadata.
+ * Used by search to score all sections.
+ */
+function extractSectionsForSearch(body: string): Array<{
+  headingPath: string;
+  bodyText: string;
+  headingText: string;
+}> {
+  const sections = sectionsOf(body);
+  return sections.map((s) => {
+    const bodyText = body.slice(s.bodyStart, s.end).trim();
+    // Extract just the heading text (strip the # markers)
+    const headingText = s.headingPath.replace(/^#+\s+/, "");
+    return {
+      headingPath: s.headingPath,
+      bodyText,
+      headingText,
+    };
+  });
+}
 
-  const allDocs = manuals.list();
-  for (const dto of allDocs) {
-    const manual = manuals.getInternal(dto.id);
-    if (!manual) continue;
+/** Tokenize a query into lowercase words, dropping empties. */
+function tokenizeQuery(query: string): string[] {
+  // Split on non-alphanumeric characters, convert to lowercase, drop empty
+  return query
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 0);
+}
 
-    // Score 1: title/id match
-    if (dto.id.toLowerCase().includes(queryLower)) {
-      results.push({
-        id: dto.id,
-        headingPath: "",
-        snippet: dto.summary,
-        score: 10,
-      });
-      continue;
+/**
+ * Count distinct query terms found in text (case-insensitive).
+ * Returns the number of distinct tokens from the query found in the text.
+ */
+function countDistinctMatches(tokens: string[], text: string): number {
+  const textLower = text.toLowerCase();
+  let count = 0;
+  for (const token of tokens) {
+    // Check if token appears as a whole word or substring
+    if (textLower.includes(token)) {
+      count++;
     }
+  }
+  return count;
+}
 
-    // Score 2: summary match
-    if (dto.summary.toLowerCase().includes(queryLower)) {
-      results.push({
-        id: dto.id,
-        headingPath: "",
-        snippet: dto.summary,
-        score: 8,
-      });
-      continue;
-    }
+/**
+ * Find the first position of any query token in text and extract a ~150-char snippet.
+ */
+function extractSnippet(tokens: string[], text: string, maxLength = 150): string {
+  const textLower = text.toLowerCase();
+  let firstPos = Infinity;
 
-    // Score 3: body section match
-    const proc = processor();
-    const tree = proc.parse(manual.body);
-    const headings = extractHeadings(tree);
-
-    for (const heading of headings) {
-      if (heading.toLowerCase().includes(queryLower)) {
-        results.push({
-          id: dto.id,
-          headingPath: heading,
-          snippet: heading,
-          score: 5,
-        });
-      }
-    }
-
-    // Score 4: body content match
-    if (manual.body.toLowerCase().includes(queryLower)) {
-      const idx = manual.body.toLowerCase().indexOf(queryLower);
-      const snippet = manual.body.substring(
-        Math.max(0, idx - 50),
-        Math.min(manual.body.length, idx + 100),
-      );
-      results.push({
-        id: dto.id,
-        headingPath: "",
-        snippet,
-        score: 2,
-      });
+  for (const token of tokens) {
+    const pos = textLower.indexOf(token);
+    if (pos >= 0 && pos < firstPos) {
+      firstPos = pos;
     }
   }
 
-  // Sort by score descending, dedup by id+heading
-  const sorted = results.sort((a, b) => b.score - a.score);
+  if (firstPos === Infinity) {
+    // No token found, return start of text
+    return text.substring(0, maxLength);
+  }
+
+  // Extract window around first match
+  const start = Math.max(0, firstPos - 30);
+  const end = Math.min(text.length, start + maxLength);
+  return text.substring(start, end);
+}
+
+/** Search across all manuals for matching sections. Tokenizes query and ranks by distinct term matches. */
+function searchManuals(manuals: Manuals, query: string): Array<{ id: string; headingPath: string; snippet: string }> {
+  const tokens = tokenizeQuery(query);
+  if (tokens.length === 0) {
+    return [];
+  }
+
+  const results: Array<{
+    id: string;
+    headingPath: string;
+    snippet: string;
+    score: number;
+    docIndex: number; // preserve registry order for ties
+  }> = [];
+
+  const allDocs = manuals.list();
+  for (let docIdx = 0; docIdx < allDocs.length; docIdx++) {
+    const dto = allDocs[docIdx];
+    if (!dto) continue;
+    const manual = manuals.getInternal(dto.id);
+    if (!manual) continue;
+
+    // Check doc header: id, summary, read-when
+    const idText = dto.id.toLowerCase();
+    const summaryText = dto.summary.toLowerCase();
+    const readWhenText = (manual.frontmatter.readWhen ?? "").toLowerCase();
+    const docHeaderText = `${idText} ${summaryText} ${readWhenText}`;
+
+    const docHeaderMatches = countDistinctMatches(tokens, docHeaderText);
+    if (docHeaderMatches > 0) {
+      // Doc header hit: weight id/summary hits higher
+      const idMatches = countDistinctMatches(tokens, idText);
+      const summaryMatches = countDistinctMatches(tokens, summaryText);
+      const score = idMatches * 3 + summaryMatches * 2 + (docHeaderMatches - idMatches - summaryMatches);
+
+      const snippet = extractSnippet(tokens, docHeaderText);
+      results.push({
+        id: dto.id,
+        headingPath: "", // doc header has no heading path
+        snippet,
+        score,
+        docIndex: docIdx,
+      });
+    }
+
+    // Check sections
+    const sectionData = extractSectionsForSearch(manual.body);
+    for (const section of sectionData) {
+      const headingMatches = countDistinctMatches(tokens, section.headingText);
+      const bodyMatches = countDistinctMatches(tokens, section.bodyText);
+      const totalMatches = headingMatches + bodyMatches;
+
+      if (totalMatches > 0) {
+        // Weight heading hits higher than body hits
+        const score = headingMatches * 2 + bodyMatches;
+
+        // Extract snippet from heading or body, preferring heading
+        let snippet: string;
+        if (headingMatches > 0) {
+          snippet = extractSnippet(tokens, section.headingText);
+        } else {
+          snippet = extractSnippet(tokens, section.bodyText);
+        }
+
+        results.push({
+          id: dto.id,
+          headingPath: section.headingPath,
+          snippet,
+          score,
+          docIndex: docIdx,
+        });
+      }
+    }
+  }
+
+  // Sort by score descending, then by registry order (docIndex) to preserve ties
+  const sorted = results.sort((a, b) => {
+    if (b.score !== a.score) {
+      return b.score - a.score;
+    }
+    // Ties: preserve registry order
+    return a.docIndex - b.docIndex;
+  });
+
+  // Dedup by id+headingPath (keep first occurrence)
   const seen = new Set<string>();
   return sorted
     .filter((r) => {
@@ -243,9 +368,7 @@ async function executeReadManual(
       };
     }
 
-    const proc = processor();
-    const tree = proc.parse(manual.body);
-    return { content: formatOutline(tree), status: "success" };
+    return { content: formatOutline(manual.body), status: "success" };
   }
 
   if (action === "read") {
@@ -271,85 +394,27 @@ async function executeReadManual(
 
     let content = manual.body;
 
-    // If headingPath specified, extract only that section using AST
+    // If headingPath specified, extract only that section
     if (args.headingPath) {
-      const headingPath = args.headingPath; // capture for type narrowing
-      const proc = processor();
-      const tree = proc.parse(manual.body);
-      const headings = extractHeadings(tree);
+      const targetHeadingPath = args.headingPath;
+      const sections = sectionsOf(manual.body);
 
-      if (!headings.includes(headingPath)) {
+      // Find the first matching section (handles duplicates by returning first match)
+      const section = sections.find((s) => s.headingPath === targetHeadingPath);
+
+      if (!section) {
+        const validPaths = sections.map((s) => s.headingPath);
         return {
           content: formatNotFound(
-            `heading "${headingPath}" not found in "${id}"`,
-            headings,
+            `heading "${targetHeadingPath}" not found in "${id}"`,
+            validPaths,
           ),
           status: "success",
         };
       }
 
-      // Parse heading path to extract depth and text
-      const matchResult = headingPath.match(/^#+/);
-      const targetDepth = (matchResult?.[0] ?? "").length;
-      const targetText = headingPath.replace(/^#+\s+/, "");
-
-      // Walk tree to find target heading and extract content through next heading of same or higher depth
-      let startIdx = -1;
-      let endIdx = tree.children.length;
-
-      for (let i = 0; i < tree.children.length; i++) {
-        const node = tree.children[i];
-        if (node && node.type === "heading") {
-          const heading = node as Heading;
-          // Check if this is our target heading
-          if (startIdx === -1 && heading.depth === targetDepth) {
-            const text = heading.children
-              ?.filter((c) => c.type === "text")
-              .map((c) => (c as Text).value)
-              .join("") ?? "";
-            if (text === targetText) {
-              startIdx = i;
-              continue;
-            }
-          }
-          // If we found the start, look for the next heading of same or higher depth
-          if (startIdx !== -1 && i > startIdx) {
-            if (heading.depth <= targetDepth) {
-              endIdx = i;
-              break;
-            }
-          }
-        }
-      }
-
-      if (startIdx === -1) {
-        return {
-          content: formatNotFound(
-            `failed to extract section "${headingPath}"`,
-            headings,
-          ),
-          status: "success",
-        };
-      }
-
-      // Extract text from start heading through all content until end heading (or end of doc)
-      const startNode = tree.children[startIdx];
-      const endNode = endIdx < tree.children.length ? tree.children[endIdx] : null;
-
-      if (!startNode) {
-        return {
-          content: formatNotFound(
-            `failed to extract section "${headingPath}"`,
-            headings,
-          ),
-          status: "success",
-        };
-      }
-
-      const startOffset = startNode.position?.start.offset ?? 0;
-      const endOffset = endNode?.position?.start.offset ?? manual.body.length;
-
-      content = manual.body.substring(startOffset, endOffset).trim();
+      // Extract section from start to end
+      content = manual.body.slice(section.start, section.end).trim();
     }
 
     // Wrap contributed docs in untrusted-data block
