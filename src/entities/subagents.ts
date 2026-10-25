@@ -170,6 +170,8 @@ export const READ_CLASS_TOOLS: ReadonlySet<string> = new Set([
   // §8.7 — `ingest` reads a source and fans out read-only summarizer workers;
   // it changes nothing, so it is read-class (free at the gate, allow-listed).
   "ingest",
+  // §12.8 — reads only the registered manual, never the filesystem.
+  "read_manual",
   // §8.6 — THE SINGLE EXEMPTION from the write-class/mutating list. A worker
   // that holds `researcher_save_notes` stays READ-class, so it gets NO isolation
   // (no worktree) and dispatching it from the read-only `research` agent is NOT a

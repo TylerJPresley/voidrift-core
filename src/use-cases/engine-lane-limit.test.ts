@@ -127,7 +127,7 @@ async function makeCore(model: BaseChatModel, seed: Record<string, unknown>, sta
 /** Seed the agents this slice drives. `research` is the PURE ORCHESTRATOR (no
  * direct read/web tools); `vibe` and the built-in `chat` round it out. */
 async function seedAgents(api: Awaited<ReturnType<typeof createCore>>["api"]) {
-  await api.agents.create({ name: "research", description: "pure orchestrator", kind: "top-level", systemPrompt: "RESEARCH", tools: ["task", "researcher_save_notes", "save_memory", "list_memory", "delete_memory", "list_skills", "load_skill"], workers: ["researcher"], unlisted: "deny", order: 20 });
+  await api.agents.create({ name: "research", description: "pure orchestrator", kind: "top-level", systemPrompt: "RESEARCH", tools: ["task", "researcher_save_notes", "save_memory", "list_memory", "delete_memory", "list_skills", "load_skill", "read_manual"], workers: ["researcher"], unlisted: "deny", order: 20 });
   await api.agents.create({ name: "vibe", description: "delegates every change", kind: "top-level", systemPrompt: "VIBE", tools: ["task"], workers: "all", unlisted: "allow", confirm: true, order: 30 });
   await api.agents.create({ name: "researcher", description: "read-only", kind: "worker", systemPrompt: "RSRCH", tools: ["read_file", "glob_files"] });
 }

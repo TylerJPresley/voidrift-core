@@ -15,6 +15,7 @@
     "query_logs",
     "list_skills",
     "load_skill",
+    "read_manual",
     "web_fetch",
     "web_search",
     "wait",

@@ -32,7 +32,7 @@ const okProbe: ProbeResult = { reachable: true, status: 200, modelIds: ["local-m
 function baseDeps(overrides: Partial<DoctorDeps> & { config: ConfigCapability }): DoctorDeps {
   return {
     agents: { definitions: [], skipped: [] },
-    knownTools: () => new Set(["read_file", "write_file", "execute_command", "task"]),
+    knownTools: () => new Set(["read_file", "write_file", "execute_command", "task", "read_manual"]),
     mutatingTools: () => new Set(["write_file", "execute_command"]),
     skills: () => [{ name: "systems-thinking", valid: true, dir: "/cfg/skills/systems-thinking/SKILL.md" }],
     paths: {
@@ -468,6 +468,19 @@ describe("config.doctor (§13.9.2)", () => {
     const f = report.groups.find((g) => g.id === "allow-list")!.findings.find((x) => x.id === "allow-list.missing.allow-researcher_save_notes");
     expect(f?.status).toBe("warn");
     expect(f?.fix).toContain("voidrift init --update");
+  });
+
+  it("ALLOW LIST: read_manual is a known tool and does not flag as dead when added to permissions (§8.6)", async () => {
+    const doc = seedConfigDocument();
+    // read_manual is in the seeded allow list; verify the doctor knows it as a valid tool.
+    // Even if we manually add read_manual to an agent, the doctor should not flag it as dead.
+    const c = await cap({ global: doc });
+    const report = await runDoctor(baseDeps({ config: c }), { offline: true });
+    // read_manual should NOT be flagged as a dead allow-list entry.
+    const readManualDead = report.groups
+      .find((g) => g.id === "allow-list")
+      ?.findings.find((x) => x.id === "allow-list.dead.allow-read_manual");
+    expect(readManualDead).toBeUndefined();
   });
 
   it("MODELS: no model configured fails with a fix", async () => {

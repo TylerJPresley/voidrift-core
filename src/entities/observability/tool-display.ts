@@ -26,6 +26,7 @@ const TOOL_LABELS: Record<string, string> = {
   delete_memory: "Memories",
   list_skills: "Skills",
   load_skill: "Load Skill",
+  read_manual: "Manual",
   task: "Task",
 };
 

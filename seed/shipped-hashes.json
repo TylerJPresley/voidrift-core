@@ -9,12 +9,14 @@
       "606d18ff0e9ccf1805fed1fca4c0cf82176d805e0a6c8f84e904faeae23aef62"
     ],
     "agents/planner/agent.json": [
+      "c27d8c3cad897d1e75f916658240de3a9f45ee0fbf33fe26b9649377dc610360",
       "bd1545ed24edf287aad4da1c819f0993c1123dc501b54f3ace361aed8f917869"
     ],
     "agents/planner/prompt.md": [
       "c2d9d5e8715714b6798c3fcc7a8320082c930cc3c8a611dfbd0c23ab89e03daa"
     ],
     "agents/research/agent.json": [
+      "e10999dce2a8feb561821e95e9b9fd9e9bff38f3cb5163ceb82d9c53c1adab31",
       "b6f0da235be22ab0d95b34fcd1196fe4b269237c9b176d58c428d24f2ba950d2",
       "06f61a791d65833a5bfc2cf70f32c0c6c4b5af8dc36a2b609833e58271d8655e",
       "613ef15952ba3c51c56f7e06f34f637a751c5589d5b2150cfbf7039092450b78",
@@ -33,6 +35,7 @@
       "be58be14efdebd6b5380905cfaca53052858a5210ef8015a84934cfde2a31cf3"
     ],
     "agents/researcher/agent.json": [
+      "3b8e69b56d64540972e5960e601aa8185edf70dc5881360fad1b53394b00bf41",
       "d1efa4101e0e1d1dd62a94bae5ec478d007251d1814388c46f2c2fca2872427e",
       "9fb61ee7c34eb8ef496ed5d49e5790b5f6ec1386da7a5fcdeb701bf879f4662b"
     ],
@@ -48,6 +51,7 @@
       "4483e2a06fbefb8af93f8ab2009e7ebda6db75cd5d57bd398c7bb27acfcb1e98"
     ],
     "agents/vibe/agent.json": [
+      "014dd92c7da3220211db333e33c2c9fbb7df8f0414cbe6475dd8ff275ad4e29e",
       "467da6b57fc3edb3165c06142aff0bcada3bf358aef4854e192886f22c829c9f",
       "7bd337e3c73e39dec94f8a9265d0c1e8a2e5d42436a063cff676e4f48e9d416a",
       "2b88adb9da9bc50c7b5fb22ad0807591a9deb4a8513c952987182a57aea975ec",

@@ -8,6 +8,7 @@
     "search_contents",
     "workspace_map",
     "list_skills",
-    "load_skill"
+    "load_skill",
+    "read_manual"
   ]
 }

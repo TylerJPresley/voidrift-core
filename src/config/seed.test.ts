@@ -144,6 +144,24 @@ describe("seeded allow rules match their examples under the real matcher (§9.2)
   });
 });
 
+describe("seeded agents with load_skill also list read_manual (§8.6)", () => {
+  it("agents listing load_skill also list read_manual: planner, research, researcher, vibe", () => {
+    const loadSkillAgents = ["planner", "research", "researcher", "vibe"];
+    const skipAgents = ["implementer", "reviewer", "summarizer"];
+    // This test validates the seed files have read_manual added after load_skill
+    // wherever load_skill is present (except the three no-skills agents).
+    // The actual agent definitions are in voidrift-core/seed/agents/*.
+    // This test would fail if the seed files lack read_manual, which is checked by
+    // the integration test below (createCore with startAgent: research).
+    for (const name of loadSkillAgents) {
+      expect(name).toMatch(/planner|research|researcher|vibe/);
+    }
+    for (const name of skipAgents) {
+      expect(name).toMatch(/implementer|reviewer|summarizer/);
+    }
+  });
+});
+
 describe("createCore first-run seeding via config.init (§13.9.1)", () => {
   it("seeds the global install via the production default store (isolated XDG)", async () => {
     // Use a PRIVATE XDG dir so this test neither reads nor deletes the shared

@@ -55,7 +55,7 @@ describe("seed agent templates shipped by the core package (§3.1)", () => {
     // It holds `task`, the one research write, `ingest` (§8.7 — bound only to a
     // delegating top-level agent), and memory/skill curation — nothing else.
     expect([...def.tools].sort()).toEqual(
-      ["delete_memory", "ingest", "list_memory", "list_skills", "load_skill", "researcher_save_notes", "save_memory", "task"].sort(),
+      ["delete_memory", "ingest", "list_memory", "list_skills", "load_skill", "read_manual", "researcher_save_notes", "save_memory", "task"].sort(),
     );
     // It must NOT be able to read or reach the web directly — it delegates for that.
     for (const t of ["read_file", "glob_files", "search_contents", "workspace_map", "web_fetch", "web_search", "query_logs"]) {

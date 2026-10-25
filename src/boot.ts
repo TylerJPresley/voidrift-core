@@ -444,6 +444,7 @@ export async function doctorConfigHome(
     "wait",
     "ingest",
     "query_logs",
+    "read_manual",
     "list_skills",
     "load_skill",
   ]);

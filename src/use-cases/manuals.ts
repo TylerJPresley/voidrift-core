@@ -58,6 +58,12 @@ export class Manuals {
     this.deps.toolRegistry.register(def, exec);
   }
 
+  /** The model-facing tool (read_manual) for the engine to bind (§8.1, §12.8). */
+  modelTools(): { def: { name: string; description: string; schema: unknown }; exec: (args: unknown, ctx: { workspaceRoot: string; sessionId: string }) => Promise<{ content: string; status: string }> }[] {
+    const { def, exec } = readManualTool(this);
+    return [{ def, exec }];
+  }
+
   /**
    * Register a builtin manual programmatically (§12.8). Plugins use this seam too.
    * Duplicate ids are rejected (append-only, no shadowing).

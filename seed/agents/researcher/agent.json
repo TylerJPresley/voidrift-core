@@ -11,6 +11,7 @@
     "web_search",
     "list_skills",
     "load_skill",
+    "read_manual",
     "researcher_save_notes"
   ]
 }

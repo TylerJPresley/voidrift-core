@@ -342,6 +342,8 @@ export interface SkillContextSource {
  */
 export interface ManualContextSource {
   indexLines(): { id: string; summary: string; readWhen: string; contributed: boolean }[];
+  /** The model-facing tool (read_manual) to bind to the agent (§8.1, §12.8). */
+  modelTools(): { def: { name: string; description: string; schema: unknown }; exec: (args: unknown, ctx: { workspaceRoot: string; sessionId: string }) => Promise<{ content: string; status: string }> }[];
 }
 
 /**
@@ -1822,6 +1824,20 @@ export class Engine {
     // read-only, so free at the gate; a skill grants no privilege (§9, §1 rule 15).
     if (this.deps.skills) {
       for (const t of this.deps.skills.modelTools()) {
+        tools.push(
+          tool(async (args: unknown) => (await t.exec(args, { workspaceRoot: this.deps.workspaceRoot, sessionId: session.id })).content, {
+            name: t.def.name,
+            description: t.def.description,
+            schema: t.def.schema as z.ZodType,
+          }) as unknown as (typeof tools)[number],
+        );
+      }
+    }
+    // §12.8 — the `read_manual` tool binds alongside the skills tools so the
+    // model can navigate VoidRift's documentation (TOC, outline, read, search).
+    // It is read-only, so free at the gate; reading docs grants no privilege (§9).
+    if (this.deps.manuals) {
+      for (const t of this.deps.manuals.modelTools()) {
         tools.push(
           tool(async (args: unknown) => (await t.exec(args, { workspaceRoot: this.deps.workspaceRoot, sessionId: session.id })).content, {
             name: t.def.name,
