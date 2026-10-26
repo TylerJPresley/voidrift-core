@@ -24,4 +24,4 @@ Inbound contributions must be Apache-2.0 licensed; outbound is Apache-2.0.
 - Every commit is tested: the build and the affected tests pass before you commit, and a bug fix carries its regression test in the same commit. Commit after each verified chunk, not once at the end.
 - Push in logical chunks after the full test run passes. No force pushes, no amending pushed commits.
 
-AI assistants working in this repository follow the same rules (see `AGENTS.md`).
+These rules apply to every contributor, human or AI.
