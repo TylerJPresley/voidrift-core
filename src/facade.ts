@@ -1630,6 +1630,11 @@ export class CoreAPI {
       const res = this.deps.manuals.registerBuiltin(raw, id);
       if (!res.ok) return res.error;
     },
+    docs: async (dir: string, source: string): Promise<CoreError | void> => {
+      // §12.8 — register all *.md files from a directory as builtin docs.
+      // The source slug identifies the docs provider (e.g., "core", "plugin-foo").
+      return this.deps.manuals.registerDir(dir, source);
+    },
   };
 
   /** Resolve registered context-provider blocks for a layer (§4). */

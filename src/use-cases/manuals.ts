@@ -1,8 +1,9 @@
 /**
  * The Manuals capability (core-blueprint.md §12.8) — the use-case layer.
  *
- * Orchestrates the builtin registration seam, the registry, and the CoreAPI
- * namespace. Programmatic registration emits nothing (like builtin skills).
+ * Orchestrates the programmatic registration seam (registerDir for directories,
+ * registerBuiltin for individual docs), the registry, and the CoreAPI namespace.
+ * Programmatic registration emits nothing (like builtin skills).
  * A doc is data, not authority: it stores/returns text only.
  * Registration is append-only: duplicate ids are rejected, no shadowing.
  */
@@ -10,9 +11,10 @@ import type { EventBus } from "../entities/event-bus.js";
 import { ManualRegistry, type ManualIndexLine } from "../entities/manuals/manual-registry.js";
 import type { Manual } from "../entities/manuals/manual.js";
 import { parseManual, ManualValidationError } from "../entities/manuals/manual.js";
-import { coreError, err, ok, ErrorCode, type Result } from "../entities/errors.js";
+import { coreError, err, ok, ErrorCode, type Result, type CoreError } from "../entities/errors.js";
 import { readManualTool } from "./read-manual-tool.js";
 import type { ToolRegistry } from "../entities/tool-registry.js";
+import { readDocsDir } from "../adapters/docs-dir-reader.js";
 
 /** A DTO view of a manual (§2, no entity crosses). */
 export interface ManualDTO {
@@ -27,6 +29,8 @@ export interface ManualsDeps {
   bus: EventBus;
   /** Register the model-facing tools through the tool registry (§8.1). */
   toolRegistry?: ToolRegistry;
+  /** Reader function for docs directories. Defaults to readDocsDir. */
+  readDocsDir?: typeof readDocsDir;
 }
 
 export class Manuals {
@@ -71,6 +75,96 @@ export class Manuals {
         );
       }
       return err(coreError(ErrorCode.INVALID_INPUT, reason, { field: "manual" }));
+    }
+  }
+
+  /**
+   * Register all *.md files from a directory recursively (§12.8).
+   * @param dir the root directory to scan
+   * @param source lowercase-hyphen slug identifying the source (e.g., "core", "plugin-foo")
+   * @returns CoreError if source slug is invalid or a duplicate id is found, void on success
+   */
+  async registerDir(dir: string, source: string): Promise<CoreError | void> {
+    // Validate source is a lowercase-hyphen slug
+    if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(source)) {
+      return coreError(ErrorCode.INVALID_INPUT, `source must be a lowercase-hyphen slug, got: ${source}`, {
+        field: "source",
+      });
+    }
+
+    // Get the reader function (default to the real implementation)
+    const reader = this.deps.readDocsDir ?? readDocsDir;
+
+    // Track ids registered in this batch for duplicate detection
+    const batchIds = new Set<string>();
+    let skipReported = false;
+
+    try {
+      const docs = await reader(dir, undefined, (reason) => {
+        if (!skipReported) {
+          this.deps.bus.emit(
+            "ERROR_OCCURRED",
+            {
+              source: "manuals",
+              message: `Skipped docs during directory read: ${reason}`,
+            },
+            {},
+          );
+          skipReported = true;
+        }
+      });
+
+      for (const doc of docs) {
+        const id = `${source}/${doc.slug}`;
+
+        // Check for duplicate within this batch
+        if (batchIds.has(id)) {
+          this.deps.bus.emit(
+            "ERROR_OCCURRED",
+            {
+              source: "manuals",
+              message: `Duplicate manual id "${id}" in batch from ${source}`,
+            },
+            {},
+          );
+          continue;
+        }
+
+        // Check for duplicate already registered
+        if (this.registry.get(id)) {
+          this.deps.bus.emit(
+            "ERROR_OCCURRED",
+            {
+              source: "manuals",
+              message: `Manual id "${id}" already registered`,
+            },
+            {},
+          );
+          continue;
+        }
+
+        // Parse and register
+        try {
+          const manual = parseManual(doc.raw, id, "builtin");
+          batchIds.add(id);
+          this.registry.register(manual);
+        } catch (e) {
+          const reason = e instanceof ManualValidationError ? e.message : String(e);
+          this.deps.bus.emit(
+            "ERROR_OCCURRED",
+            {
+              source: "manuals",
+              message: `Failed to parse manual "${id}": ${reason}`,
+            },
+            {},
+          );
+        }
+      }
+    } catch (e) {
+      const reason = String(e);
+      return coreError(ErrorCode.INVALID_INPUT, `Failed to read docs directory: ${reason}`, {
+        field: "dir",
+      });
     }
   }
 

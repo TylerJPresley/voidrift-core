@@ -1503,47 +1503,20 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
       {}
     );
   }
-  const { readdirSync } = await import("node:fs");
-  const { readFileSync } = await import("node:fs");
-  const registerShippedDocs = (dirPath: string, prefix: string): void => {
-    if (!readdirSync(dirPath, { withFileTypes: true })) return;
-    try {
-      const files = readdirSync(dirPath, { withFileTypes: true });
-      for (const file of files) {
-        if (file.isDirectory()) {
-          // Recursively load from subdirectories like explanation/, guides/, reference/
-          registerShippedDocs(path.join(dirPath, file.name), prefix);
-        } else if (file.isFile() && file.name.endsWith(".md")) {
-          const slug = file.name.replace(/\.md$/, "");
-          const fullPath = path.join(dirPath, file.name);
-          const raw = readFileSync(fullPath, "utf8");
-          const id = `${prefix}/${slug}`;
-          const result = manuals.registerBuiltin(raw, id);
-          if (!result.ok) {
-            bus.emit(
-              "ERROR_OCCURRED",
-              {
-                source: "manuals",
-                message: `Failed to register shipped doc ${id}: ${String(result.error)}`,
-              },
-              {}
-            );
-          }
-        }
-      }
-    } catch (e) {
+
+  if (docsDir) {
+    // Register shipped docs from the plugin directory
+    const result = await manuals.registerDir(docsDir, "core");
+    if (result) {
       bus.emit(
         "ERROR_OCCURRED",
         {
           source: "manuals",
-          message: `Failed to load shipped docs from ${dirPath}: ${String(e)}`,
+          message: `Failed to register shipped core docs: ${String(result)}`,
         },
         {}
       );
     }
-  };
-  if (docsDir) {
-    registerShippedDocs(docsDir, "core");
   }
 
 

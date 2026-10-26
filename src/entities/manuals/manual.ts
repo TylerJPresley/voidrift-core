@@ -3,9 +3,9 @@
  *
  * A manual is a Markdown document with YAML frontmatter containing summary,
  * read-when hint, and Diataxis type. Manual ids are namespaced by source:
- * core/, cli/, <plugin-id>/, user/, project/ — ensuring no two sources ever
- * register the same id (append-only, no shadowing). The directory adapter reads
- * files; this handles parsing, validation, and the registry.
+ * core/, cli/, <plugin-id>/ — ensuring no two sources ever register the same id
+ * (append-only, no shadowing). The directory adapter reads files; this handles
+ * parsing, validation, and the registry.
  */
 import { parse as parseYaml } from "yaml";
 
@@ -13,7 +13,7 @@ import { parse as parseYaml } from "yaml";
 export type DiataxisType = "tutorial" | "how-to" | "reference" | "explanation";
 
 /** The source a manual resolves from. */
-export type ManualSource = "builtin" | "global" | "project";
+export type ManualSource = "builtin";
 
 /** Validated front-matter from a manual document. */
 export interface ManualFrontmatter {
@@ -27,7 +27,7 @@ export interface ManualFrontmatter {
 
 /** A resolved manual in the registry: id, frontmatter, body, and source. */
 export interface Manual {
-  /** Namespaced id: core/…, cli/…, <plugin-id>/…, user/…, project/… */
+  /** Namespaced id: core/…, cli/…, <plugin-id>/… */
   id: string;
   body: string;
   source: ManualSource;
@@ -56,7 +56,7 @@ export function splitFrontmatter(raw: string): { frontmatter: string; body: stri
 
 /**
  * Validate that the id follows the namespace pattern: prefix/slug
- * Valid prefixes: core, cli, <plugin-id>, user, project.
+ * Valid prefixes: core, cli, <plugin-id>.
  */
 function validateId(id: string): void {
   const parts = id.split("/");
@@ -65,11 +65,11 @@ function validateId(id: string): void {
       `id must be namespaced as prefix/slug; got "${id}"`,
     );
   }
-  // Allow core, cli, user, project, or any plugin id (lowercase alphanumerics + hyphens)
+  // Allow core, cli, or any plugin id (lowercase alphanumerics + hyphens)
   const prefix = parts[0];
-  if (!/^([a-z0-9]+(-[a-z0-9]+)*|core|cli|user|project)$/.test(prefix)) {
+  if (!/^([a-z0-9]+(-[a-z0-9]+)*|core|cli)$/.test(prefix)) {
     throw new ManualValidationError(
-      `id prefix must be core, cli, user, project, or a valid plugin id; got "${prefix}"`,
+      `id prefix must be core, cli, or a valid plugin id; got "${prefix}"`,
     );
   }
 }
