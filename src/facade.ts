@@ -1154,7 +1154,6 @@ export class CoreAPI {
       //    live MCP server (idempotent, best-effort). The checkpoint (step 3) is
       //    already written at the turn boundary; shutdown writes no partial one.
       // Also close the manuals filesystem watcher (§14.2) and vcs branch watch.
-      await this.deps.manuals.stopWatch().catch(() => undefined);
       await this.deps.obsWriter.close().catch(() => undefined);
       for (const server of this.deps.mcpClient.list()) {
         if (server.status === "connected") await this.deps.mcpClient.disconnect(server.name).catch(() => undefined);

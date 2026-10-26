@@ -58,7 +58,6 @@ import { Manuals } from "./use-cases/manuals.js";
 import { Prompts } from "./use-cases/prompts.js";
 import { Plugins, type CoreServices, type PluginCommandHandler } from "./use-cases/plugins.js";
 import { SkillsDirectory } from "./adapters/skills-directory.js";
-import { ManualsDirectory } from "./adapters/manuals-directory.js";
 import { AgentsDirectory } from "./adapters/agents-directory.js";
 import { ConfigInit } from "./use-cases/config-init.js";
 import { NodeInitFs } from "./adapters/init-fs.js";
@@ -1464,7 +1463,6 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
   // `fileSystem` (tests), keep the single-port form so in-memory suites are
   // unaffected.
   const skillsGlobalFs = opts.fileSystem ? undefined : new FilesystemAdapter(voidriftConfigDir());
-  const manualsGlobalFs = opts.fileSystem ? undefined : new FilesystemAdapter(voidriftConfigDir());
   const skillsDir = new SkillsDirectory(
     fileSystem,
     {
@@ -1485,15 +1483,7 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
   // docs are loaded from .voidrift/docs (project/) and ~/.config/voidrift/docs
   // (user/) through the same pattern as skills (§12.1, separate workspace/global
   // FileSystemPort). RESOURCE_CHANGED is emitted on reindex (§14.2, §14.6).
-  const manualsDir = new ManualsDirectory(
-    fileSystem,
-    {
-      workspace: ".voidrift/docs",
-      global: manualsGlobalFs ? "docs" : path.join(voidriftConfigDir(), "docs"),
-    },
-    manualsGlobalFs,
-  );
-  const manuals = new Manuals({ bus, toolRegistry: registry, directory: manualsDir });
+  const manuals = new Manuals({ bus, toolRegistry: registry });
 
   // Load shipped core docs (§12.8). Register each *.md under docs/ with
   // manuals.registerBuiltin(raw, `core/<slug>`) where slug is the basename
@@ -1556,14 +1546,7 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
     registerShippedDocs(docsDir, "core");
   }
 
-  await manuals.reindex().catch((e) => bus.emit("ERROR_OCCURRED", { source: "manuals", message: String(e) }, {}));
 
-  // Start the filesystem watcher for manual hot-reload (§14.2, §14.6). The watcher
-  // monitors both the project .voidrift/docs and global ~/.config/voidrift/docs
-  // directories and triggers reindex on add/change/unlink, emitting RESOURCE_CHANGED.
-  const projectDocsPath = path.resolve(workspaceRoot, ".voidrift/docs");
-  const globalDocsPath = path.resolve(voidriftConfigDir(), "docs");
-  await manuals.startWatch(projectDocsPath, globalDocsPath).catch((e) => bus.emit("ERROR_OCCURRED", { source: "manuals", message: String(e) }, {}));
 
   // An approved skill candidate becomes a workspace skill (§6.7, §12.1): the core
   // never writes a skill on its own — only approval (the human decision) does.
