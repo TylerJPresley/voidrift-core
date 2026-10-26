@@ -227,6 +227,10 @@ export const LIMITS: readonly LimitSpec[] = [
   // --- approval (H) ---
   { key: "approval.autoDenySeconds", area: "approval", default: 0, unit: "seconds", class: "tunable", min: 0, max: 86400, doc: "Auto-deny a pending approval after this many seconds (0 = off, wait indefinitely).", inv: "DP1" },
 
+  // --- docs (I) ---
+  { key: "docs.maxFiles", area: "docs", default: 500, unit: "count", class: "tunable", min: 1, max: 100_000, doc: "Max manual doc files read per registered docs directory.", inv: "DOCS1" },
+  { key: "docs.maxFileBytes", area: "docs", default: 262144, unit: "bytes", class: "tunable", min: 1, max: 100 * MIB, doc: "Max size of one manual doc file; larger files are skipped.", inv: "DOCS2" },
+
   // --- doctor (H) ---
   { key: "doctor.networkTimeoutMs", area: "doctor", default: 5000, unit: "ms", class: "tunable", min: 1, max: 600_000, doc: "Doctor network-check timeout.", inv: "DOC1" },
 

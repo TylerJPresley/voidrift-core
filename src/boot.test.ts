@@ -165,4 +165,94 @@ describe("createCore default wiring (§2.1)", () => {
 
     await api.session.shutdown();
   });
+
+  it("register.docs(dir, source) calls manuals.registerDir and returns its result", async () => {
+    const docsDir = path.join(ws, "test-docs");
+    await fs.mkdir(docsDir, { recursive: true });
+    
+    // Create a doc
+    await fs.writeFile(
+      path.join(docsDir, "test.md"),
+      `---
+summary: Test doc
+read-when: anytime
+type: reference
+---
+# Test`
+    );
+
+    const { api } = await createCore({
+      workspaceRoot: ws,
+      chatModelFactory: () => fakeModel().respond(new AIMessage("ok")),
+    });
+
+    // register.docs should now work (was throwing "reserved for future use" before)
+    const result = await api.register.docs(docsDir, "test");
+    expect(result).toBeUndefined(); // registerDir returns void on success
+
+    // Call again with same source (will emit ERROR_OCCURRED for duplicates but not throw)
+    const dupResult = await api.register.docs(docsDir, "test");
+    expect(dupResult).toBeUndefined(); // Still returns void, error emitted as event
+
+    // Try with bad source slug — this DOES return a CoreError
+    const badResult = await api.register.docs(docsDir, "BadSource_123");
+    expect(badResult).toBeDefined();
+    expect(badResult?.code).toContain("INVALID_INPUT");
+
+    await api.session.shutdown();
+  });
+
+  it("readDocsDir skips symlinks pointing outside the root", async () => {
+    // This test directly tests the docs-dir-reader logic
+    const rootDir = path.join(ws, "docs-root");
+    const outsideDir = path.join(ws, "outside");
+    
+    await fs.mkdir(rootDir, { recursive: true });
+    await fs.mkdir(outsideDir, { recursive: true });
+    
+    // Create a normal doc
+    await fs.writeFile(
+      path.join(rootDir, "normal.md"),
+      `---
+summary: Normal
+read-when: anytime
+type: reference
+---
+# Normal`
+    );
+    
+    // Create outside doc
+    await fs.writeFile(
+      path.join(outsideDir, "outside.md"),
+      `---
+summary: Outside
+read-when: never
+type: reference
+---
+# Outside`
+    );
+
+    // Create symlink inside docs pointing outside
+    try {
+      await fs.symlink(path.join(outsideDir, "outside.md"), path.join(rootDir, "linked.md"));
+    } catch (e) {
+      // Skip on systems that don't support symlinks
+      if ((e as any).code === "EACCES" || (e as any).code === "EPERM") {
+        return;
+      }
+      throw e;
+    }
+
+    // Import and use readDocsDir directly to test
+    const { readDocsDir } = await import("./adapters/docs-dir-reader.js");
+    const result = await readDocsDir(rootDir);
+    
+    const slugs = result.map((d) => d.slug);
+    expect(slugs).toContain("normal");
+    // The symlink should be skipped (not in the result)
+    expect(slugs.some((s) => s.includes("linked") || s.includes("outside"))).toBe(false);
+
+    await fs.rm(rootDir, { recursive: true, force: true });
+    await fs.rm(outsideDir, { recursive: true, force: true });
+  });
 });

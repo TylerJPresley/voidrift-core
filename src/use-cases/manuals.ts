@@ -15,6 +15,7 @@ import { coreError, err, ok, ErrorCode, type Result, type CoreError } from "../e
 import { readManualTool } from "./read-manual-tool.js";
 import type { ToolRegistry } from "../entities/tool-registry.js";
 import { readDocsDir } from "../adapters/docs-dir-reader.js";
+import type { LimitsPort } from "../entities/ports/limits-port.js";
 
 /** A DTO view of a manual (§2, no entity crosses). */
 export interface ManualDTO {
@@ -31,6 +32,8 @@ export interface ManualsDeps {
   toolRegistry?: ToolRegistry;
   /** Reader function for docs directories. Defaults to readDocsDir. */
   readDocsDir?: typeof readDocsDir;
+  /** Limits port for enforcing caps on doc file reading (§13.11). */
+  limits?: LimitsPort;
 }
 
 export class Manuals {
@@ -102,7 +105,7 @@ export class Manuals {
     let skipReported = false;
 
     try {
-      const docs = await reader(dir, undefined, (reason) => {
+      const docs = await reader(dir, this.deps.limits, (reason) => {
         if (!skipReported) {
           this.deps.bus.emit(
             "ERROR_OCCURRED",

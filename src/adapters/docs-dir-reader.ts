@@ -25,16 +25,8 @@ export async function readDocsDir(
   limits?: LimitsPort,
   onSkipped?: (reason: string) => void,
 ): Promise<DocFile[]> {
-  let maxFiles: number;
-  let maxFileBytes: number;
-  try {
-    maxFiles = limits?.get("docs.maxFiles") ?? limitDefault("docs.maxFiles");
-    maxFileBytes = limits?.get("docs.maxFileBytes") ?? limitDefault("docs.maxFileBytes");
-  } catch {
-    // Limit keys may not exist yet; use safe defaults
-    maxFiles = 1000;
-    maxFileBytes = 100 * 1024;
-  }
+  const maxFiles = limits?.get("docs.maxFiles") ?? limitDefault("docs.maxFiles");
+  const maxFileBytes = limits?.get("docs.maxFileBytes") ?? limitDefault("docs.maxFileBytes");
   
   const docs: DocFile[] = [];
   let rootRealPath: string;
