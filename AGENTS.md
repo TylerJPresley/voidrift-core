@@ -42,5 +42,8 @@ Run from this folder. Scripts:
 - Every git invocation goes through the hardened runner (`adapters/git-harden.ts`).
 
 ## Git
-- Conventional commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`).
-- Build and test before pushing. No force pushes, no amending pushed commits.
+- Develop on `main` with conventional commits (`feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`); add the spec section when one applies, for example `feat: render the manual table of contents (§4.6)`.
+- One logical change per commit, small enough that a reader sees what happened from the message and the diff. Never mix a refactor, a removal, a new limit and a bug fix in one commit.
+- Every commit is tested: the build and the affected tests pass before you commit, and a bug fix carries its regression test in the same commit. Commit after each verified chunk, not once at the end.
+- Push in logical chunks after the full test run passes. No force pushes, no amending pushed commits.
+- AI assistants follow these rules too, and push only when the owner says to.
