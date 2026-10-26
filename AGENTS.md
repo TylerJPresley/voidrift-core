@@ -40,3 +40,5 @@ Run from this folder. Scripts:
 - Every rigid limit (size, count, time, ratio) is an entry in the one `limits` registry (`core-blueprint.md` §13.11); there are no hidden limits.
 - Architecture rules: `core-blueprint.md` §1. Core stack: LangChain/LangGraph, Zod (single source of truth for tool schemas), the MCP SDK, Chokidar, Liqe.
 - Every git invocation goes through the hardened runner (`adapters/git-harden.ts`).
+
+Follow `CONTRIBUTING.md` for this project's standards.
