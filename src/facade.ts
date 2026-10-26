@@ -1153,7 +1153,6 @@ export class CoreAPI {
       //    reaches quiescence and flushes exporters, §10.3), then disconnect every
       //    live MCP server (idempotent, best-effort). The checkpoint (step 3) is
       //    already written at the turn boundary; shutdown writes no partial one.
-      // Also close the manuals filesystem watcher (§14.2) and vcs branch watch.
       await this.deps.obsWriter.close().catch(() => undefined);
       for (const server of this.deps.mcpClient.list()) {
         if (server.status === "connected") await this.deps.mcpClient.disconnect(server.name).catch(() => undefined);
@@ -1626,13 +1625,10 @@ export class CoreAPI {
       // thrower is isolated and the local trail is written regardless.
       this.deps.registerExporter(exporter as import("./entities/observability/obs-record.js").ObsExporter);
     },
-    manual: (raw: string, id: string): CoreError | void => {
-      const res = this.deps.manuals.registerBuiltin(raw, id);
-      if (!res.ok) return res.error;
-    },
     docs: async (dir: string, source: string): Promise<CoreError | void> => {
       // §12.8 — register all *.md files from a directory as builtin docs.
-      // The source slug identifies the docs provider (e.g., "core", "plugin-foo").
+      // This is the programmatic seam for external callers to register documentation.
+      // For plugins, use the scoped CoreAPI which forces source to the plugin id.
       return this.deps.manuals.registerDir(dir, source);
     },
   };

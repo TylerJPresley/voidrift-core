@@ -195,9 +195,24 @@ type: reference
     await manuals.registerDir("/plugin/docs", "myplugin");
 
     // Verify the docs are registered
-    const list = manuals.list();
-    const pluginDocs = list.filter((m) => m.id.startsWith("myplugin/"));
+    let list = manuals.list();
+    let pluginDocs = list.filter((m) => m.id.startsWith("myplugin/"));
     expect(pluginDocs).toHaveLength(2);
     expect(pluginDocs.map((m) => m.id).sort()).toEqual(["myplugin/faq", "myplugin/guide"]);
+
+    // Now unregister all docs for the plugin
+    manuals.unregisterPluginDocs("myplugin");
+
+    // Verify the docs are removed
+    list = manuals.list();
+    pluginDocs = list.filter((m) => m.id.startsWith("myplugin/"));
+    expect(pluginDocs).toHaveLength(0);
+
+    // Re-register with the same source — should work after unload
+    await manuals.registerDir("/plugin/docs", "myplugin");
+
+    list = manuals.list();
+    pluginDocs = list.filter((m) => m.id.startsWith("myplugin/"));
+    expect(pluginDocs).toHaveLength(2);
   });
 });

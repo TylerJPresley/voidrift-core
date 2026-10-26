@@ -138,6 +138,14 @@ export interface CoreServices {
   /** Remove a §8.7 plugin chunker by its qualified key (teardown). */
   unregisterChunker(key: string): void;
   /**
+   * Register all *.md files from a directory as plugin-contributed documentation (§12.8).
+   * Source is forced to the plugin id. Errors are contained; on unload, all docs for this
+   * plugin are removed via `unregisterPluginDocs`.
+   */
+  registerPluginDocs(pluginId: string, dir: string, pluginRealPath: string): Promise<void>;
+  /** Unregister all docs contributed by a plugin (called on plugin teardown, §12.8). */
+  unregisterPluginDocs(pluginId: string): void;
+  /**
    * Start a NEW session and send a first prompt (§12.3). A routine runs clean
    * every time; the host-facing `session.command("routine", id)` reaches this.
    * Returns the DTO result of the turn.
@@ -248,6 +256,13 @@ export interface ScopedCoreApi {
     planScope(id: string, scope: { writeGlobs: string[]; executePatterns: string[] }): void;
     /** Clear a §9.5 plan-scope the plugin registered (§9.5). */
     clearPlanScope(id: string): void;
+    /**
+     * Register all *.md files from a directory as plugin-contributed documentation (§12.8).
+     * The source is forced to the plugin id (the caller cannot choose it).
+     * On disable, all docs registered by this plugin are removed from the registry.
+     * Returns void on success (errors are contained and logged).
+     */
+    docs(dir: string): void;
   };
   /**
    * The §9.5.1 expectation seam (prediction vs journal). Plugin-callable: the
@@ -449,7 +464,7 @@ export class Plugins {
   private async loadResolved(resolved: ResolvedPlugin, source: ConfigLayer = "global", options: Record<string, unknown> = {}): Promise<void> {
     if (this.loaded.has(resolved.meta.id)) return;
     const contributions = emptyContributions();
-    const scoped = this.makeScoped(resolved.meta.id, contributions);
+    const scoped = this.makeScoped(resolved.meta.id, contributions, resolved.realPath);
     try {
       const register = await this.deps.loader.importRegister(resolved);
       await register(scoped, options);
@@ -468,7 +483,7 @@ export class Plugins {
   }
 
   /** Build the scoped CoreAPI for a plugin (§12.4): tagged + namespaced. */
-  private makeScoped(pluginId: string, c: Contributions): ScopedCoreApi {
+  private makeScoped(pluginId: string, c: Contributions, realPath: string): ScopedCoreApi {
     const s = this.deps.services;
     const wrapHandler = <A extends unknown[]>(fn: (...a: A) => unknown): ((...a: A) => unknown) => {
       // A throwing plugin handler is contained (§12.4).
@@ -542,6 +557,18 @@ export class Plugins {
           // read, never reachable by the plugin (invariant 27).
           s.closeExpectation(id);
         },
+        docs: (dir: string) => {
+          // §12.8 — register all *.md files from a directory as plugin-contributed docs.
+          // Source is forced to the plugin id (the caller cannot choose it).
+          // Errors are caught and logged; docs are tracked in manuals.pluginDocs for teardown.
+          void (async () => {
+            try {
+              await s.registerPluginDocs(pluginId, dir, realPath);
+            } catch (e) {
+              this.logError(`plugin "${pluginId}" docs registration failed: ${String(e)}`);
+            }
+          })();
+        },
       },
       expectations: {
         register: (req) => s.registerExpectation(req?.scope, req?.predicted),
@@ -612,6 +639,8 @@ export class Plugins {
     for (const key of c.datasets) this.deps.services.unregisterDataset(key);
     for (const key of c.scopes) this.deps.services.unregisterScopeKey(key);
     for (const key of c.chunkers) this.deps.services.unregisterChunker(key);
+    // §12.8 — unregister all docs contributed by this plugin.
+    this.deps.services.unregisterPluginDocs(pluginId);
     for (const unsub of c.unsubscribes) unsub();
     this.deps.registryStore.removeNamespace(pluginId);
   }

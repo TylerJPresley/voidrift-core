@@ -69,6 +69,8 @@ function makeServices(sink: Record<string, unknown>, registryStore?: RegistrySto
     closeExpectation: () => {},
     registerChunker: () => "chunker:0",
     unregisterChunker: () => {},
+    registerPluginDocs: async () => {},
+    unregisterPluginDocs: () => {},
     runInNewSession: async () => ({ status: "completed" }),
     workspace: { files: async () => [], readText: async () => null, currentInput: () => "", focusPaths: () => [], cacheDir: () => "/tmp/cache", hashFor: () => null },
   };
@@ -581,6 +583,8 @@ describe("Plugins capability (§12.4)", () => {
         return `${pluginId}:chunker:${id}`;
       },
       unregisterChunker: (key) => calls.push(`-chunker:${key}`),
+      registerPluginDocs: async () => { calls.push("+docs"); },
+      unregisterPluginDocs: () => calls.push("-docs"),
       runInNewSession: async () => ({ status: "completed" }),
       workspace: { files: async () => [], readText: async () => null, currentInput: () => "", focusPaths: () => [], cacheDir: () => "/tmp/cache", hashFor: () => null },
     };

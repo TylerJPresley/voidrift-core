@@ -3,9 +3,9 @@
  *
  * A manual is a Markdown document with YAML frontmatter containing summary,
  * read-when hint, and Diataxis type. Manual ids are namespaced by source:
- * core/, cli/, <plugin-id>/ — ensuring no two sources ever register the same id
- * (append-only, no shadowing). The directory adapter reads files; this handles
- * parsing, validation, and the registry.
+ * core/, cli/, <plugin-id>/ — ensuring no two sources ever register the same
+ * id (append-only, no shadowing). The directory adapter reads files; this
+ * handles parsing, validation, and the registry.
  */
 import { parse as parseYaml } from "yaml";
 
@@ -27,7 +27,7 @@ export interface ManualFrontmatter {
 
 /** A resolved manual in the registry: id, frontmatter, body, and source. */
 export interface Manual {
-  /** Namespaced id: core/…, cli/…, <plugin-id>/… */
+  /** Namespaced id: core/…, cli/…, or <plugin-id>/… */
   id: string;
   body: string;
   source: ManualSource;
@@ -56,7 +56,7 @@ export function splitFrontmatter(raw: string): { frontmatter: string; body: stri
 
 /**
  * Validate that the id follows the namespace pattern: prefix/slug
- * Valid prefixes: core, cli, <plugin-id>.
+ * Valid prefixes: core, cli, or any plugin id.
  */
 function validateId(id: string): void {
   const parts = id.split("/");

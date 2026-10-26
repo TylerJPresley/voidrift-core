@@ -37,6 +37,8 @@ export class Manuals {
   private readonly registry = new ManualRegistry();
   /** Builtin manuals registered programmatically (§12.8). */
   private readonly builtins = new Map<string, Manual>();
+  /** Plugin-contributed docs, keyed by plugin id for teardown (§12.8). */
+  private readonly pluginDocs = new Map<string, Set<string>>();
 
   constructor(private readonly deps: ManualsDeps) {
     this.registerTools();
@@ -143,29 +145,58 @@ export class Manuals {
           continue;
         }
 
-        // Parse and register
         try {
           const manual = parseManual(doc.raw, id, "builtin");
           batchIds.add(id);
+          this.builtins.set(id, manual);
           this.registry.register(manual);
+          
+          // Record plugin-contributed docs for teardown on unload
+          if (source !== "builtin") {
+            if (!this.pluginDocs.has(source)) {
+              this.pluginDocs.set(source, new Set());
+            }
+            this.pluginDocs.get(source)!.add(id);
+          }
         } catch (e) {
           const reason = e instanceof ManualValidationError ? e.message : String(e);
           this.deps.bus.emit(
             "ERROR_OCCURRED",
             {
               source: "manuals",
-              message: `Failed to parse manual "${id}": ${reason}`,
+              message: `Failed to register manual ${id}: ${reason}`,
             },
             {},
           );
         }
       }
+      return undefined; // success
     } catch (e) {
-      const reason = String(e);
-      return coreError(ErrorCode.INVALID_INPUT, `Failed to read docs directory: ${reason}`, {
-        field: "dir",
-      });
+      this.deps.bus.emit(
+        "ERROR_OCCURRED",
+        {
+          source: "manuals",
+          message: `Failed to scan directory ${dir}: ${String(e)}`,
+        },
+        {},
+      );
+      return coreError(ErrorCode.INVALID_INPUT, String(e), { field: "dir" });
     }
+  }
+
+  /**
+   * Unregister all docs contributed by a plugin (§12.4 teardown).
+   * Called when a plugin is disabled or unloaded.
+   */
+  unregisterPluginDocs(pluginId: string): void {
+    const ids = this.pluginDocs.get(pluginId);
+    if (!ids) return;
+
+    for (const id of ids) {
+      this.registry.remove(id);
+      this.builtins.delete(id);
+    }
+    this.pluginDocs.delete(pluginId);
   }
 
   // ── the index seam the engine reads (§4.6) ──────────────────────────────
@@ -206,4 +237,5 @@ export class Manuals {
       source: manual.source,
     };
   }
+
 }

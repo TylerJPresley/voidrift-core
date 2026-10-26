@@ -67,6 +67,7 @@ import { PromptsDirectory } from "./adapters/prompts-directory.js";
 import { PluginLoader } from "./adapters/plugin-loader.js";
 import { PluginRegistryClient } from "./adapters/plugin-registry-client.js";
 import { NpmInstallerAdapter } from "./adapters/npm-installer.js";
+import { resolveInside } from "./adapters/docs-confine.js";
 import { maskValue } from "./use-cases/secret-mask.js";
 import { RegistryStore, CORE_NAMESPACE, PANELS_KEY_PREFIX, DATASETS_KEY_PREFIX } from "./entities/registry/registry-store.js";
 import { NodeRegistryPersistence, workspaceKey, isRegistryFile } from "./entities/registry/registry-persistence.js";
@@ -1479,17 +1480,14 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
   });
   await skills.reindex().catch((e) => bus.emit("ERROR_OCCURRED", { source: "skills", message: String(e) }, {}));
 
-  // Manuals: the append-only registry for the manual (§12.8). Filesystem-sourced
-  // docs are loaded from .voidrift/docs (project/) and ~/.config/voidrift/docs
-  // (user/) through the same pattern as skills (§12.1, separate workspace/global
-  // FileSystemPort). RESOURCE_CHANGED is emitted on reindex (§14.2, §14.6).
+  // Manuals: the append-only registry for documentation (§12.8). Each component
+  // (core, CLI, plugins) registers its docs directory through the CoreAPI seam.
+  // Shipped core docs are registered at boot via registerDir.
   const manuals = new Manuals({ bus, toolRegistry: registry });
 
-  // Load shipped core docs (§12.8). Register each *.md under docs/ with
-  // manuals.registerBuiltin(raw, `core/<slug>`) where slug is the basename
-  // without extension. This runs BEFORE manuals.reindex() so core/ ids exist
-  // first. registerBuiltin is silent (no RESOURCE_CHANGED), matching builtin
-  // skills. A malformed doc is an ERROR_OCCURRED, not a crash.
+  // Load shipped core docs (§12.8). Registered via registerDir which recursively
+  // reads *.md under docs/ with ids = core/<slug>. A malformed doc is
+  // ERROR_OCCURRED, not a crash. registerDir returns void or CoreError (never throws).
   let docsDir: string | null = null;
   try {
     docsDir = shippedDocsDir();
@@ -1512,14 +1510,12 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
         "ERROR_OCCURRED",
         {
           source: "manuals",
-          message: `Failed to register shipped core docs: ${String(result)}`,
+          message: `Failed to register shipped docs: ${result.message}`,
         },
         {}
       );
     }
   }
-
-
 
   // An approved skill candidate becomes a workspace skill (§6.7, §12.1): the core
   // never writes a skill on its own — only approval (the human decision) does.
@@ -1692,6 +1688,40 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
       return key;
     },
     unregisterChunker: (key) => void chunkerStore.delete(key),
+    // §12.8 — plugin docs registration. Docs are registered from a plugin's
+    // directory using registerDir; the plugin id is used as the source prefix.
+    registerPluginDocs: async (pluginId, dir, pluginRealPath) => {
+      // Use resolveInside to safely resolve and confine the docs path
+      const realDocsPath = await resolveInside(pluginRealPath, dir);
+
+      if (realDocsPath === null) {
+        // Confinement check failed: path traversal, absolute path, nonexistent, or symlink outside
+        bus.emit(
+          "ERROR_OCCURRED",
+          {
+            source: "manuals",
+            message: `Plugin "${pluginId}" docs path is outside plugin directory or invalid: ${dir}`,
+          },
+          {}
+        );
+        return;
+      }
+
+      // Register the docs with the plugin id as source
+      const result = await manuals.registerDir(realDocsPath, pluginId);
+      if (result) {
+        // Error occurred; emit it
+        bus.emit(
+          "ERROR_OCCURRED",
+          { source: "manuals", message: `Plugin "${pluginId}" docs failed: ${result.message}` },
+          {}
+        );
+      }
+    },
+    unregisterPluginDocs: (pluginId) => {
+      // Unregister all docs contributed by this plugin
+      manuals.unregisterPluginDocs(pluginId);
+    },
     runInNewSession: async (firstPrompt, sopts) => {
       // The ONE implementation lives on the facade (§12.3, §5.7). It starts a
       // NEW session (never inheriting a prior conversation) that DOES inherit the
