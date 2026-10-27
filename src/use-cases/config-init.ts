@@ -23,8 +23,6 @@
  * seed-template locator; no `node:fs` here (§1 rule 3, 7).
  */
 import path from "node:path";
-import * as fs from "node:fs";
-import { createHash } from "node:crypto";
 import { ConfigSchema } from "../config/schema.js";
 import { seedConfigDocument, seedPermissions } from "../config/seed.js";
 import {
@@ -35,9 +33,7 @@ import {
 import { parseAgentManifest } from "../entities/agent-manifest.js";
 import { parseSkill } from "../entities/skills/skill.js";
 import { isLeftoverName } from "../config/live-leftovers.js";
-import { migrateRetiredKeys } from "../config/migrate.js";
-import { pluginShortName, isRegistryFile } from "../entities/registry/registry-persistence.js";
-import type { InitFs } from "../entities/ports/init-fs.js";
+import { migrateRetiredKeys } from "../config/migrate.js";import type { InitFs } from "../entities/ports/init-fs.js";
 import { coreError, ErrorCode, err, ok, type Result } from "../entities/errors.js";
 
 /** The seeded agent directory names (§13.8), top-level then workers. */
@@ -46,46 +42,6 @@ export const SEED_AGENTS = ["research", "vibe", "researcher", "planner", "implem
 /** The seeded skill directory names (§12.1, §13.9.1). The second seeded asset
  * class after the agents: domain-neutral skills the global base materializes. */
 export const SEED_SKILLS = ["systems-thinking"] as const;
-
-/** Compute the old global workspace key: first 16 hex chars of SHA-256 of the
- * workspace real path (stage 1 and earlier layout, §13.9.1 stage 2). Used only
- * for the one-time migration from `<globalDir>/registry/<key>/` to project scope. */
-function workspaceKeyOld(workspaceRealPath: string): string {
-  return createHash("sha256").update(workspaceRealPath).digest("hex").slice(0, 16);
-}
-
-/** The old file-safe plugin id format (stage 1 and earlier): keep `[a-z0-9._-]`,
- * replace the rest with `_`, bound length to 128. Used only to reverse-map old
- * files to short names during the one-time migration (§13.9.1 stage 2). */
-function fileSafePluginIdOld(id: string): string {
-  const safe = id.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 128);
-  return safe === "" ? "_" : safe;
-}
-
-/** Derive the original plugin id from an old file-safe name by trying to
- * reconstruct the id and converting it to short name. Returns null if the
- * derivation is ambiguous or fails. Used during migration to map old file names
- * to the short names they should migrate to. */
-function derivePluginIdFromOldFile(fileName: string): string | null {
-  // The old safe name is @scope/plugin-name → scoped_plugin_name or
-  // plugin-name → plugin_name. The leading underscore (from @) is significant.
-  // Try reconstructing with @ and / and plugin- prefixes, then verify round-trip.
-  const candidates = [
-    // Try: @voidrift/plugin-<name> form (most common; produces leading _)
-    `@voidrift/plugin-${fileName.replace(/^_voidrift_plugin-/, "").replace(/_/g, "-")}`,
-    // Try: just plugin-<name> form (bare)
-    `plugin-${fileName.replace(/^plugin_/, "").replace(/_/g, "-")}`,
-    // Try: direct <name> form (no plugin- prefix)
-    fileName.replace(/_/g, "-"),
-  ];
-  for (const candidate of candidates) {
-    if (fileSafePluginIdOld(candidate) === fileName) {
-      // Valid round-trip; use pluginShortName to get the target short name
-      return candidate;
-    }
-  }
-  return null;
-}
 
 /** Options for `config.init` (§13.9.1). */
 export interface ConfigInitOptions {
@@ -105,10 +61,6 @@ export interface ConfigInitResult {
   created: string[];
   repaired: string[];
   leftAlone: string[];
-  /** Plugin short names migrated from the old global registry to the new project registry (§13.9.1 stage 2). */
-  migrated?: string[];
-  /** Plugin short names from the old global registry that were invalid and skipped. */
-  skippedInvalid?: string[];
 }
 
 /** The `voidrift init --sweep` outcome (§13.9.1): the leftover files moved into
@@ -307,23 +259,7 @@ export class ConfigInit {
     // The project form also materializes an empty `agents/` folder (§13.9.1).
     if (scope === "project") await this.fs.mkdirp(path.join(root!, "agents"));
 
-    // Registry migration (§13.9.1 stage 2): copy old global registry files to
-    // the new project location if this is the first time (project store not yet present).
-    const migrated: string[] = [];
-    const skippedInvalid: string[] = [];
-    if (scope === "project") {
-      const migResult = await this.migrateRegistries(root!, opts.dir ?? process.cwd());
-      migrated.push(...migResult.migrated);
-      skippedInvalid.push(...migResult.skippedInvalid);
-    }
-
-    return ok({
-      created: created.sort(),
-      repaired: repaired.sort(),
-      leftAlone: leftAlone.sort(),
-      ...(migrated.length > 0 && { migrated: migrated.sort() }),
-      ...(skippedInvalid.length > 0 && { skippedInvalid: skippedInvalid.sort() }),
-    });
+    return ok({ created: created.sort(), repaired: repaired.sort(), leftAlone: leftAlone.sort() });
   }
 
   /**
@@ -825,107 +761,5 @@ export class ConfigInit {
       throw new Error(`seed skill template missing: ${abs}`);
     }
     return content;
-  }
-
-  /**
-   * Registry migration (§13.9.1 stage 2): migrate old global registry files to
-   * the new project location when init runs in project scope. The old files are
-   * under `<globalDir>/registry/<workspace key>/` where the workspace key is the
-   * first 16 hex chars of SHA-256 of the workspace real path. Files are named
-   * `<plugin id file-safe>.json`. Each old file is copied to
-   * `<project>/.voidrift/plugins/<short name>/registry.json`. The old global
-   * files are NOT deleted (backup only, per spec saying moves are destructive;
-   * we copy instead). Idempotent: existing project stores are left untouched.
-   */
-  private async migrateRegistries(
-    projRoot: string,
-    projectDir: string,
-  ): Promise<{ migrated: string[]; skippedInvalid: string[] }> {
-    const migrated: string[] = [];
-    const skippedInvalid: string[] = [];
-
-    // Resolve the real workspace path to compute the old workspace key.
-    let realPath = projectDir;
-    try {
-      realPath = fs.realpathSync.native(projectDir);
-    } catch {
-      realPath = path.resolve(projectDir);
-    }
-    const wsKey = workspaceKeyOld(realPath);
-    const oldRegistryDir = path.join(this.globalDir, "registry", wsKey);
-
-    // Check if the old registry dir exists.
-    if (!(await this.fs.exists(oldRegistryDir))) {
-      return { migrated, skippedInvalid };
-    }
-
-    // List files in the old registry dir.
-    const oldFiles = await this.fs.listDir(oldRegistryDir);
-    const jsonFiles = oldFiles.filter((e) => !e.isDir && e.name.endsWith(".json"));
-
-    for (const file of jsonFiles) {
-      const fileName = file.name.slice(0, -5); // remove .json
-      const oldFilePath = path.join(oldRegistryDir, file.name);
-
-      // Derive the plugin id from the old file-safe name.
-      const pluginId = derivePluginIdFromOldFile(fileName);
-      if (pluginId === null) {
-        // Could not derive — skip with a warning.
-        skippedInvalid.push(fileName);
-        continue;
-      }
-
-      // Get the short name for the new location.
-      const shortName = pluginShortName(pluginId);
-
-      // Check if the project registry file already exists.
-      const newDir = path.join(projRoot, "plugins", shortName);
-      const newFilePath = path.join(newDir, "registry.json");
-      if (await this.fs.exists(newFilePath)) {
-        // Already exists — leave untouched (idempotent).
-        continue;
-      }
-
-      // Read the old file to validate it.
-      const oldContent = await this.fs.readFile(oldFilePath);
-      if (oldContent === null) {
-        // Could not read — skip.
-        skippedInvalid.push(shortName);
-        continue;
-      }
-
-      // Validate that it's a valid registry file.
-      let oldDoc: unknown;
-      try {
-        oldDoc = JSON.parse(oldContent);
-      } catch {
-        // Not valid JSON — skip.
-        skippedInvalid.push(shortName);
-        continue;
-      }
-
-      if (!isRegistryFile(oldDoc)) {
-        // Not a valid registry file — skip.
-        skippedInvalid.push(shortName);
-        continue;
-      }
-
-      // Valid file: read it and copy to the new project location.
-      // Also backup the old global file (copy only, do NOT delete - per spec).
-      const stamp = backupTimestamp();
-      const backupRel = path.posix.join("registry", wsKey, file.name);
-      const backupAbs = path.join(this.globalDir, "backups", stamp, backupRel);
-      // Write backup copy (copy only, oldFilePath stays)
-      await this.fs.mkdirp(path.dirname(backupAbs));
-      await this.fs.writeFile(backupAbs, oldContent);
-      await this.pruneBackupSets(this.globalDir);
-
-      // Copy the file to the new project location.
-      await this.fs.mkdirp(newDir);
-      await this.fs.writeFile(newFilePath, oldContent);
-      migrated.push(shortName);
-    }
-
-    return { migrated, skippedInvalid };
   }
 }
