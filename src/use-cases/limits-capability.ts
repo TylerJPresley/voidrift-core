@@ -2,8 +2,8 @@
  * The runtime `LimitsPort` implementation (core-blueprint.md §13.11, §14.6).
  *
  * Reads effective values from a resolved limits set (`resolveLimits`) and emits
- * `LIMIT_HIT {key, area, value, scope}` on the event bus at most once per key
- * per turn, returning the one-line notice. `resetTurn()` clears the per-turn
+ * `LIMIT_HIT {key, area, value, action, scope}` on the event bus at most once per key
+ * per turn, returning the one-line notice and action. `resetTurn()` clears the per-turn
  * dedup (called by the engine at each turn boundary, like the chat/read lanes).
  *
  * This is the small, stable surface parallel implementers wire their area's call
@@ -57,6 +57,8 @@ export class LimitsCapability implements LimitsPort {
     const spec = getLimitSpec(key);
     if (!spec) throw new Error(`unknown limit key: ${key}`);
     const value = this.get(key);
+    const entry = this.resolved.values.get(key);
+    const action = entry?.action ?? spec.action;
     // Always report the key exactly as it is REGISTERED (`spec.key`), never the
     // caller-supplied spelling, so the notice, the per-turn dedup and the
     // emitted LIMIT_HIT payload all carry the canonical case — a headless run's
@@ -72,8 +74,8 @@ export class LimitsCapability implements LimitsPort {
         ...(ctx?.session ? { session: ctx.session } : {}),
         ...(ctx?.worker ? { worker: ctx.worker } : {}),
       };
-      this.bus.emit("LIMIT_HIT", { key: canonicalKey, area: spec.area, value, scope, observed, notice }, scope);
+      this.bus.emit("LIMIT_HIT", { key: canonicalKey, area: spec.area, value, action, scope, observed, notice }, scope);
     }
-    return { notice, first };
+    return { notice, action, first };
   }
 }

@@ -1011,4 +1011,51 @@ describe("doctor: limits group (§13.11)", () => {
     expect(w?.file).toBe("memory://project");
     expect(w?.fix).toBeTruthy();
   });
+
+  it("(a) WARNs when a download-class limit is set to action warn", async () => {
+    const c = await cap({
+      global: seedConfigDocument(),
+      project: { limits: { tools: { webFetchBodyMaxBytes: { value: 5242880, action: "warn" } } } },
+    });
+    const report = await runDoctor(baseDeps({ config: c }), { offline: true });
+    const f = limitsGroup(report).findings.find((x) => x.id === "limits.action-warn.tools.webFetchBodyMaxBytes");
+    expect(f?.status).toBe("warn");
+    expect(f?.message).toContain("webFetchBodyMaxBytes");
+  });
+
+  it("(a-deny) NO warn for download-class limit with action deny", async () => {
+    const c = await cap({
+      global: seedConfigDocument(),
+      project: { limits: { tools: { webFetchBodyMaxBytes: { value: 5242880, action: "deny" } } } },
+    });
+    const report = await runDoctor(baseDeps({ config: c }), { offline: true });
+    const f = limitsGroup(report).findings.find((x) => x.id === "limits.action-warn.tools.webFetchBodyMaxBytes");
+    expect(f).toBeUndefined();
+  });
+
+  it("(b) NO warn for plan.maxTouches (tunable, not download-class)", async () => {
+    const c = await cap({
+      global: seedConfigDocument(),
+      project: { limits: { plan: { maxTouches: 100 } } },
+    });
+    const report = await runDoctor(baseDeps({ config: c }), { offline: true });
+    const g = limitsGroup(report);
+    const w = g.findings.find((f) => f.id === "limits.action-warn.plan.maxTouches");
+    expect(w).toBeUndefined();
+  });
+
+  it("(c) Lists each customized limit with value/action/class/source", async () => {
+    const c = await cap({
+      global: seedConfigDocument(),
+      project: { limits: { tools: { webFetchBodyMaxBytes: 5242880 } } },
+    });
+    const report = await runDoctor(baseDeps({ config: c }), { offline: true });
+    const g = limitsGroup(report);
+    const f = g.findings.find((f) => f.id === "limits.customized.tools.webFetchBodyMaxBytes");
+    expect(f?.status).toBe("ok");
+    expect(f?.message).toContain("webFetchBodyMaxBytes");
+    expect(f?.message).toContain("5242880");
+    expect(f?.message).toContain("safety");
+    expect(f?.message).toContain("project");
+  });
 });

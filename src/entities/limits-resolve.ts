@@ -45,6 +45,8 @@ export interface ResolvedLimit {
   key: string;
   area: string;
   value: number;
+  /** The resolved action (warn | deny) — the winning layer's action, else spec.action. */
+  action: "warn" | "deny";
   /** The layer whose value was applied, or `"default"` when none set it. */
   source: "managed" | "global" | "project" | "session" | "default";
   /** The file the applied value came from, when a layer set it. */
@@ -71,14 +73,40 @@ export interface ResolvedLimits {
 const ORDER: LimitLayerInput["layer"][] = ["managed", "global", "project", "session"];
 
 /** Read a dotted `area.name` out of a nested `{ area: { name: value } }` object.
- * Returns `undefined` when absent or not a finite number. */
-function readLeaf(obj: Record<string, unknown> | undefined, spec: LimitSpec): number | undefined {
+ * Returns `{ value?, action? }` when a leaf is found:
+ * - bare number → { value }
+ * - object { value, action } → { value, action }
+ * Returns `undefined` when absent or not a valid form. */
+function readLeaf(
+  obj: Record<string, unknown> | undefined,
+  spec: LimitSpec,
+): { value?: number; action?: "warn" | "deny" } | undefined {
   if (!obj) return undefined;
   const area = obj[spec.area];
   if (typeof area !== "object" || area === null) return undefined;
   const name = spec.key.slice(spec.area.length + 1);
   const v = (area as Record<string, unknown>)[name];
-  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+  
+  // Bare number form
+  if (typeof v === "number" && Number.isFinite(v)) {
+    return { value: v };
+  }
+  
+  // Object form { value, action }
+  if (typeof v === "object" && v !== null && !Array.isArray(v)) {
+    const obj = v as Record<string, unknown>;
+    const value = obj.value;
+    const action = obj.action;
+    if (typeof value === "number" && Number.isFinite(value)) {
+      if (action === "warn" || action === "deny") {
+        return { value, action };
+      } else if (action === undefined) {
+        return { value };
+      }
+    }
+  }
+  
+  return undefined;
 }
 
 /**
@@ -92,6 +120,7 @@ export function resolveLimits(inputs: LimitLayerInput[]): ResolvedLimits {
 
   for (const spec of LIMITS) {
     let value = spec.default;
+    let action: "warn" | "deny" = spec.action;
     let source: ResolvedLimit["source"] = "default";
     let sourcePath: string | undefined;
     let aliasOf: string | undefined;
@@ -109,23 +138,29 @@ export function resolveLimits(inputs: LimitLayerInput[]): ResolvedLimits {
       if (leaf === undefined && spec.alias && input?.doc) {
         const legacy = input.doc[spec.alias];
         if (typeof legacy === "number" && Number.isFinite(legacy)) {
-          leaf = legacy;
+          leaf = { value: legacy };
           fromAlias = true;
         }
       }
       if (leaf === undefined) continue;
 
+      const leafValue = leaf.value!;
+
       if (spec.class === "safety" && (layerName === "project" || layerName === "session")) {
         // Honored only if it LOWERS (never raises) the current effective value,
         // and never above a managed ceiling.
-        const raises = leaf > value;
+        const raises = leafValue > value;
         if (raises) {
           warnings.push({
             key: spec.key,
             layer: layerName,
             ...(input?.path ? { path: input.path } : {}),
-            message: `limits.${spec.key} is a safety limit; a ${layerName} layer may only lower it (requested ${leaf}, effective stays ${value})`,
+            message: `limits.${spec.key} is a safety limit; a ${layerName} layer may only lower it (requested ${leafValue}, effective stays ${value})`,
           });
+          // Value is ignored, but action may still apply (not bound by class rule)
+          if (leaf.action !== undefined) {
+            action = leaf.action;
+          }
           continue;
         }
       }
@@ -133,24 +168,31 @@ export function resolveLimits(inputs: LimitLayerInput[]): ResolvedLimits {
       if (spec.class === "integrity" && (layerName === "project" || layerName === "session")) {
         // Honored only if it RAISES (never lowers) the current effective value —
         // a project/session must not weaken an audit/restore guarantee.
-        const lowers = leaf < value;
+        const lowers = leafValue < value;
         if (lowers) {
           warnings.push({
             key: spec.key,
             layer: layerName,
             ...(input?.path ? { path: input.path } : {}),
-            message: `limits.${spec.key} is an integrity limit; a ${layerName} layer may only raise it (requested ${leaf}, effective stays ${value})`,
+            message: `limits.${spec.key} is an integrity limit; a ${layerName} layer may only raise it (requested ${leafValue}, effective stays ${value})`,
           });
+          // Value is ignored, but action may still apply (not bound by class rule)
+          if (leaf.action !== undefined) {
+            action = leaf.action;
+          }
           continue;
         }
       }
 
-      value = leaf;
+      value = leafValue;
       source = layerName;
       sourcePath = input?.path;
       aliasOf = fromAlias ? spec.alias : undefined;
-      if (spec.class === "safety" && layerName === "managed") managedCeiling = leaf;
-      if (spec.class === "integrity" && layerName === "managed") managedFloor = leaf;
+      if (leaf.action !== undefined) {
+        action = leaf.action;
+      }
+      if (spec.class === "safety" && layerName === "managed") managedCeiling = leafValue;
+      if (spec.class === "integrity" && layerName === "managed") managedFloor = leafValue;
     }
 
     // A managed ceiling is a hard cap regardless of order edge cases.
@@ -162,7 +204,7 @@ export function resolveLimits(inputs: LimitLayerInput[]): ResolvedLimits {
       value = managedFloor;
     }
 
-    values.set(spec.key, { key: spec.key, area: spec.area, value, source, ...(sourcePath ? { sourcePath } : {}), ...(aliasOf ? { aliasOf } : {}) });
+    values.set(spec.key, { key: spec.key, area: spec.area, value, action, source, ...(sourcePath ? { sourcePath } : {}), ...(aliasOf ? { aliasOf } : {}) });
   }
 
   return { values, warnings };

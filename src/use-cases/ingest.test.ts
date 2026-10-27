@@ -25,7 +25,7 @@ import { mergeFull } from "../entities/memory/project-context.js";
 function fakeLimits(overrides: Record<string, number> = {}): LimitsPort {
   return {
     get: (k) => (k in overrides ? overrides[k]! : limitDefault(k)),
-    hit: () => ({ notice: "", first: false }),
+    hit: () => ({ notice: "", action: "warn", first: false }),
     resetTurn: () => undefined,
   };
 }

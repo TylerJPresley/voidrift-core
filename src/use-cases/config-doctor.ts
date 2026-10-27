@@ -1378,6 +1378,11 @@ async function checkRollback(ctx: Ctx): Promise<DoctorFinding[]> {
  * the runtime capability does. Prints no value a secret could hide in (numeric
  * limits only).
  */
+/**
+ * Per core-blueprint.md §13.9.2 LIMITS: every effective limit with its value,
+ * action, class, and source layer; warn on download- or network-class limits
+ * set to `action: "warn"`.
+ */
 function checkLimits(ctx: Ctx): DoctorFinding[] {
   const out: DoctorFinding[] = [];
   const resolved = resolveLimits(ctx.deps.config.limitLayers());
@@ -1416,6 +1421,44 @@ function checkLimits(ctx: Ctx): DoctorFinding[] {
         { layer: w.layer, ...(w.path ? { file: w.path } : {}) },
       ),
     );
+  }
+
+  // Download-/network-class limits set to action: warn need explicit confirmation.
+  // Per §13.9.2: warn on tools.webFetch*, tools.webSearch*, plugins.searchMaxBytes,
+  // plugins.installMaxBytes, or tools.imageMaxBytes with action warn.
+  const downloadNetworkKeys = new Set([
+    "tools.webFetchBodyMaxBytes",
+    "tools.webFetchMaxHops",
+    "tools.webSearchBodyMaxBytes",
+    "tools.imageMaxBytes",
+    "plugins.searchMaxBytes",
+    "plugins.installMaxBytes",
+  ]);
+  for (const [key, resolved_entry] of resolved.values) {
+    if (downloadNetworkKeys.has(key) && resolved_entry.action === "warn" && resolved_entry.source !== "default") {
+      out.push(
+        warnF(
+          `limits.action-warn.${key}`,
+          `${key} is set to action: warn (requires explicit confirmation)`,
+          `set action: deny in the appropriate config layer, or remove the limit setting`,
+          { layer: resolved_entry.source, ...(resolved_entry.sourcePath ? { file: resolved_entry.sourcePath } : {}) },
+        ),
+      );
+    }
+  }
+
+  // Report each customized limit with value/action/class/source.
+  for (const [key, resolved_entry] of resolved.values) {
+    if (resolved_entry.source !== "default") {
+      const spec = getLimitSpec(key);
+      const className = spec?.class || "unknown";
+      out.push(
+        okF(
+          `limits.customized.${key}`,
+          `${key}: value=${resolved_entry.value}, action=${resolved_entry.action}, class=${className}, source=${resolved_entry.source}`,
+        ),
+      );
+    }
   }
 
   return out;

@@ -424,7 +424,7 @@ describe("§6.7/§10.6 — reflectSequence: a repeated-sequence signal → ONE p
     // the caller reads limits.get('memory.sequenceEvidenceFraction').
     let seen: { examples?: unknown[] } | undefined;
     const makeLimits = (fraction: number): MemoryDeps["limits"] =>
-      ({ get: (k: string) => (k === "memory.sequenceEvidenceFraction" ? fraction : 0), hit: () => ({ notice: "", first: false }), resetTurn: () => {} });
+      ({ get: (k: string) => (k === "memory.sequenceEvidenceFraction" ? fraction : 0), hit: () => ({ notice: "", action: "warn", first: false }), resetTurn: () => {} });
     const spans = Array.from({ length: 6 }, () => ({ source: "tool", name: "read_file", status: "ok", argSummary: "x".repeat(50) }));
 
     const tiny = harness({

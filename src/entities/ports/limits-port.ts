@@ -21,12 +21,14 @@ export interface LimitHitContext {
   what?: string;
 }
 
-/** The result of a `hit`: the one-line notice, and whether this was the FIRST
- * hit of this key this turn (so a caller can attach the marker exactly once). */
+/** The result of a `hit`: the one-line notice, the action taken, and whether
+ * this was the FIRST hit of this key this turn. */
 export interface LimitHitResult {
   /** The one-line notice: `<what> (limits.<key> = <value>). Raise it in config:
    * limits.<key>`. Returned for the model-visible marker and the CLI line. */
   notice: string;
+  /** The action taken: "warn" (run continued) or "deny" (request refused). */
+  action: "warn" | "deny";
   /** True when this is the first hit of `key` in the current turn. */
   first: boolean;
 }
@@ -36,8 +38,8 @@ export interface LimitsPort {
    * rule. Throws on an unknown key (a programming error, never a config path). */
   get(key: string): number;
   /** Record that `key` just truncated/blocked. Emits `LIMIT_HIT {key, area,
-   * value, scope}` at most once per key per turn and returns the notice. Safe to
-   * call on every truncation; only the first per key per turn emits/returns
+   * value, action, scope}` at most once per key per turn and returns the notice and action.
+   * Safe to call on every truncation; only the first per key per turn emits/returns
    * `first: true`. `observed` is the size the caller saw (for the event). */
   hit(key: string, observed?: number, ctx?: LimitHitContext): LimitHitResult;
   /** Clear the per-turn `LIMIT_HIT` dedup. The engine calls this at each turn

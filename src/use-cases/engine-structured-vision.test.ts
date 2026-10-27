@@ -319,7 +319,7 @@ describe("GAP 5 — vision attach (§3.3)", () => {
     // the LIMIT_HIT notice (not the hard-coded fallback) names the key.
     const limits = {
       get: (k: string) => (k === "tools.imagesPerMessage" ? 2 : k === "tools.imageMaxBytes" ? 5 * 1024 * 1024 : 0),
-      hit: (key: string) => ({ notice: `too many image attachments (limits.${key} = 2). Raise it in config: limits.${key}`, first: true }),
+      hit: (key: string) => ({ notice: `too many image attachments (limits.${key} = 2). Raise it in config: limits.${key}`, action: "deny" as const, first: true }),
       resetTurn: () => {},
     };
     const { engine, session } = makeEngine(model, { vision: true, workspaceFileSystem: vfs, limits });
@@ -339,7 +339,7 @@ describe("GAP 5 — vision attach (§3.3)", () => {
     const model = new ScriptedModel(null, coreToolNameSet());
     const limits = {
       get: (k: string) => (k === "tools.imageMaxBytes" ? 100 : k === "tools.imagesPerMessage" ? 4 : 0),
-      hit: () => ({ notice: "", first: false }),
+      hit: () => ({ notice: "", action: "deny" as const, first: false }),
       resetTurn: () => {},
     };
     const { engine, session } = makeEngine(model, { vision: true, workspaceFileSystem: vfs, limits });

@@ -120,7 +120,7 @@ describe("§8.4 — MCP client", () => {
         keys.push(key);
         return 10_000;
       },
-      hit: () => ({ notice: "", first: false }),
+      hit: () => ({ notice: "", action: "warn" as const, first: false }),
       resetTurn: () => {},
     };
     const client = new McpClient({
