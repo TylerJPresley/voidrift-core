@@ -69,6 +69,8 @@ import { PluginRegistryClient } from "./adapters/plugin-registry-client.js";
 import { NpmInstallerAdapter } from "./adapters/npm-installer.js";
 import { resolveInside } from "./adapters/docs-confine.js";
 import { maskValue } from "./use-cases/secret-mask.js";
+import { PluginFilesAccessor } from "./use-cases/plugin-files-accessor.js";
+import { pluginShortName } from "./entities/registry/registry-persistence.js";
 import { RegistryStore, CORE_NAMESPACE, PANELS_KEY_PREFIX, DATASETS_KEY_PREFIX } from "./entities/registry/registry-store.js";
 import { NodeRegistryPersistence, isRegistryFile } from "./entities/registry/registry-persistence.js";
 import { validatePanelDeclaration } from "./entities/registry/panel-schema.js";
@@ -1734,6 +1736,25 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
       getFocusPaths: () => apiRef?.activeFocusPaths() ?? [],
       limits,
     }),
+    // §12.5 — create the contained pluginFiles accessor for a plugin. One per
+    // plugin; confined to its folder with traversal/symlink/registry.json guards.
+    // Wired with journal recorder and getter functions for sessionId/turn (§10.11),
+    // evaluated at each write/remove call, not at construction.
+    makePluginFilesAccessor: (pluginId: string) => {
+      const folderName = pluginShortName(pluginId);
+      const pluginFolder = path.join(workspaceRoot, ".voidrift", "plugins", folderName);
+      return new PluginFilesAccessor({
+        pluginFolder,
+        journal: journalRecorder,
+        // Plugin file writes are journaled during plugin initialization in the
+        // orchestrator context with turn=0. The sessionId is always "orchestrator"
+        // and turn is always 0 (following core-blueprint §10.11 convention for
+        // writes without active session context; the rollback journal step uses
+        // the same pattern at boot.ts ~l.1299).
+        getSessionId: () => "orchestrator",
+        getTurn: () => 0,
+      });
+    },
   };
 
   const pluginLoader = new PluginLoader(workspaceRoot, voidriftConfigDir());

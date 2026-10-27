@@ -155,6 +155,18 @@ export interface CoreServices {
   /** The read-only workspace surface the scoped API exposes as `core.workspace`
    * (retrieval-blueprint §3). Plugin-only; never a model tool. */
   workspace: WorkspaceSurface;
+  /**
+   * Create the contained pluginFiles accessor for a plugin (§12.5). Returns an
+   * object with `list()`, `read(path)`, `write(path, body)`, and `remove(path)`
+   * methods confined to the plugin's folder. Optional; if absent, a no-op
+   * accessor is wired to the plugin.
+   */
+  makePluginFilesAccessor?(pluginId: string): {
+    list(subpath?: string): Promise<import("./plugin-files-accessor.js").PluginFileEntry[]>;
+    read(path: string): Promise<string | null>;
+    write(path: string, body: string): Promise<void>;
+    remove(path: string): Promise<void>;
+  };
 }
 
 export type ContextLayer = "agent" | "void" | "rift";
@@ -209,6 +221,35 @@ export interface WorkspaceSurface {
    * read — safe inside a synchronous context provider.
    */
   hashFor(path: string): string | null;
+  /**
+   * A contained accessor to the calling plugin's own working files at
+   * `<workspace>/.voidrift/plugins/<name>/` (§12.5). Operations: `list()`,
+   * `read(path)`, `write(path, body)`, `remove(path)` — all confined to that
+   * folder. Traversal (`..`), absolute paths, and symlink escapes are REFUSED.
+   * `registry.json` is never reachable. Writes are atomic, secret-masked, and
+   * journaled. NOT a model tool and never in any tool list.
+   */
+  pluginFiles?: {
+    /**
+     * List files and directories in the plugin folder, optionally filtered by
+     * subpath. Returns metadata ({name, kind:'file'|'dir', bytes, mtimeMs})
+     * without contents.
+     */
+    list(subpath?: string): Promise<import("./plugin-files-accessor.js").PluginFileEntry[]>;
+    /**
+     * Read a file as UTF-8 string, or null if absent or not a file.
+     */
+    read(path: string): Promise<string | null>;
+    /**
+     * Write a file atomically (temp + rename), creating parent directories.
+     * The body is secret-masked before storage.
+     */
+    write(path: string, body: string): Promise<void>;
+    /**
+     * Remove a file or empty directory.
+     */
+    remove(path: string): Promise<void>;
+  };
 }
 
 
@@ -623,7 +664,17 @@ export class Plugins {
       // The read-only workspace surface (retrieval-blueprint §3). Delegated to the
       // core services verbatim — the rules (containment, ignore, exclusions) live
       // in the core implementation, never the plugin. Not a model tool.
-      workspace: s.workspace,
+      workspace: {
+        ...s.workspace,
+        // The contained accessor to the plugin's own working files (§12.5).
+        // Built lazily per-plugin and wired here.
+        pluginFiles: s.makePluginFilesAccessor?.(pluginId) ?? {
+          list: async () => [],
+          read: async () => null,
+          write: async () => {},
+          remove: async () => {},
+        },
+      },
       // The read-only network-safety surface (§9.3): the single source of truth
       // for cloud-metadata hosts stays in the core never-list; a plugin reaches
       // it here instead of duplicating (and drifting from) the list.

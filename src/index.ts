@@ -139,6 +139,7 @@ export type {
   NetworkSurface,
   LimitsSurface,
 } from "./use-cases/plugins.js";
+export type { PluginFileEntry } from "./use-cases/plugin-files-accessor.js";
 export type { PluginMeta } from "./entities/plugins/plugin-meta.js";
 export type { PluginSearchResult, PluginReview } from "./entities/plugins/plugin-registry.js";
 export type { SkillScope } from "./entities/skills/skill.js";

@@ -15,6 +15,12 @@ export function fakeCoreServices(overrides?: Partial<CoreServices>): CoreService
     focusPaths: () => [],
     cacheDir: () => "/tmp/cache",
     hashFor: () => null,
+    pluginFiles: {
+      list: async () => [],
+      read: async () => null,
+      write: async () => {},
+      remove: async () => {},
+    },
   };
 
   return {

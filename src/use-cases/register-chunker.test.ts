@@ -71,7 +71,7 @@ function makeServicesWithStore(store: Map<string, Chunker>): CoreServices {
     registerPluginDocs: async () => {},
     unregisterPluginDocs: () => {},
     runInNewSession: async () => ({}),
-    workspace: { files: async () => [], readText: async () => null, currentInput: () => "", focusPaths: () => [], cacheDir: () => "/tmp/cache", hashFor: () => null },
+    workspace: { files: async () => [], readText: async () => null, currentInput: () => "", focusPaths: () => [], cacheDir: () => "/tmp/cache", hashFor: () => null, pluginFiles: { list: async () => [], read: async () => null, write: async () => {}, remove: async () => {} } },
   };
 }
 
