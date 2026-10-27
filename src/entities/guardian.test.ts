@@ -309,18 +309,24 @@ describe("protected-control-file guardrail (§8.4, SECURITY)", () => {
     // Project store (workspace-relative and under an absolute workspace root).
     expect(isProtectedControlFile(".voidrift/plugins/node_modules/some-plugin/index.js")).toBe(true);
     expect(isProtectedControlFile("/ws/.voidrift/plugins/package-lock.json", "/ws")).toBe(true);
-    // Global store: `<voidriftConfigDir()>/plugins` always ends `…/voidrift/plugins`.
+    // Global store: `<voidriftConfigDir()>/plugins` install artifacts only are protected.
     expect(isProtectedControlFile("/home/u/.config/voidrift/plugins/node_modules/some-plugin/index.js")).toBe(true);
-    // A traversal into the store is still caught.
-    expect(isProtectedControlFile(".voidrift/x/../plugins/evil.js")).toBe(true);
+    // STAGE 1: A traversal that resolves to a plugin folder is now ordinary (not protected)
+    expect(isProtectedControlFile(".voidrift/x/../plugins/evil.js")).toBe(false);
+    // But a traversal into a plugin's registry.json IS still protected
+    expect(isProtectedControlFile(".voidrift/plugins/plan/x/../registry.json")).toBe(true);
     // A sibling that merely contains "plugins" is NOT caught.
     expect(isProtectedControlFile(".voidrift/pluginsss/x.js")).toBe(false);
     expect(isProtectedControlFile("src/plugins/x.js")).toBe(false);
-    // The guardrail blocks a model write into the store.
+    // The guardrail blocks a model write into the store install artifacts.
     const ctx = { ...base, workspaceRoot: "/ws", readPaths: new Set<string>() };
     expect(
-      guardian.runGuardrails({ tool: "write_file", args: { path: "/ws/.voidrift/plugins/x.js", content: "y" } }, ctx).allowed,
+      guardian.runGuardrails({ tool: "write_file", args: { path: "/ws/.voidrift/plugins/node_modules/x.js", content: "y" } }, ctx).allowed,
     ).toBe(false);
+    // But allows a write to a plugin's working file
+    expect(
+      guardian.runGuardrails({ tool: "write_file", args: { path: "/ws/.voidrift/plugins/plan/notes.md", content: "y" } }, ctx).allowed,
+    ).toBe(true);
   });
 });
 

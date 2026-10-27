@@ -70,7 +70,7 @@ import { NpmInstallerAdapter } from "./adapters/npm-installer.js";
 import { resolveInside } from "./adapters/docs-confine.js";
 import { maskValue } from "./use-cases/secret-mask.js";
 import { RegistryStore, CORE_NAMESPACE, PANELS_KEY_PREFIX, DATASETS_KEY_PREFIX } from "./entities/registry/registry-store.js";
-import { NodeRegistryPersistence, workspaceKey, isRegistryFile } from "./entities/registry/registry-persistence.js";
+import { NodeRegistryPersistence, isRegistryFile } from "./entities/registry/registry-persistence.js";
 import { validatePanelDeclaration } from "./entities/registry/panel-schema.js";
 import { validateDatasetDeclaration } from "./entities/registry/dataset-schema.js";
 import { registerBuiltinDatasets } from "./use-cases/builtin-datasets.js";
@@ -464,7 +464,7 @@ export async function doctorConfigHome(
       journalDir: path.join(workspaceRoot, ".voidrift", "journal"),
       seedAgentsDir: seedAgentsDir(),
       seedSkillsDir: seedSkillsDir(),
-      registryDir: path.join(globalDir, "registry", registryWorkspaceKey(workspaceRoot)),
+      registryDir: path.join(workspaceRoot, ".voidrift", "plugins"),
       workspaceRoot,
     },
     envSet: (name) => process.env[name] !== undefined && process.env[name] !== "",
@@ -789,19 +789,20 @@ function makeStorageProbe(): import("./use-cases/config-doctor.js").StorageProbe
     },
 
     async registryCounts(registryDir) {
-      // §12.5 — read each plugin's registry file under the workspace's registry
-      // dir and count `routine:`/`plan:` keys by NAME only (never a value).
+      // §12.5 (STAGE 1) — read each plugin's registry.json file under
+      // .voidrift/plugins/<name>/ and count `routine:`/`plan:` keys by NAME only.
       const result = { routines: [] as string[], plans: [] as string[] };
-      let files: import("node:fs").Dirent[];
+      let pluginDirs: import("node:fs").Dirent[];
       try {
-        files = await fsp.readdir(registryDir, { withFileTypes: true });
+        pluginDirs = await fsp.readdir(registryDir, { withFileTypes: true });
       } catch {
         return result;
       }
-      for (const f of files) {
-        if (!f.isFile() || !f.name.endsWith(".json")) continue;
+      for (const pluginDir of pluginDirs) {
+        if (!pluginDir.isDirectory()) continue;
         try {
-          const raw = await fsp.readFile(path.join(registryDir, f.name), "utf8");
+          const registryFile = path.join(registryDir, pluginDir.name, "registry.json");
+          const raw = await fsp.readFile(registryFile, "utf8");
           const parsed: unknown = JSON.parse(raw);
           if (!isRegistryFile(parsed)) continue;
           for (const key of Object.keys(parsed.entries)) {
@@ -809,25 +810,12 @@ function makeStorageProbe(): import("./use-cases/config-doctor.js").StorageProbe
             else if (key.startsWith("plan:")) result.plans.push(key.slice("plan:".length));
           }
         } catch {
-          /* a malformed file is skipped (the store sets it aside at load) */
+          /* a malformed or missing registry.json is skipped (the store sets it aside at load) */
         }
       }
       return result;
     },
   };
-}
-
-/** The 16-hex workspace key the durable registry uses (§12.5): the first 16 hex
- * of SHA-256 of the workspace REAL path, so the doctor registry-dir path matches
- * the store's. Falls back to the resolved path when realpath cannot resolve. */
-function registryWorkspaceKey(workspaceRoot: string): string {
-  let real = workspaceRoot;
-  try {
-    real = fs.realpathSync.native(workspaceRoot);
-  } catch {
-    real = path.resolve(workspaceRoot);
-  }
-  return workspaceKey(real);
 }
 
 /** Run a read-only git command through the hardened runner for the doctor
@@ -1449,11 +1437,12 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
   await memory.reindex().catch((e) => bus.emit("ERROR_OCCURRED", { source: "memory", message: String(e) }, {}));
 
   // ── Skills, Prompts, Plugins, Registry (§12) ──────────────────────────────
-  // The registry is DURABLE (§12.5): one JSON file per (workspace, plugin) under
-  // `<global config dir>/registry/<workspace key>/`, outside the workspace, so a
-  // routine saved or a plan authored in one run is present in the next and a
-  // cloned repo cannot ship either. Reserved core namespaces stay in memory.
-  const registryPersistence = new NodeRegistryPersistence(voidriftConfigDir(), workspaceRoot, (message) =>
+  // The registry is DURABLE (§12.5): one JSON file per plugin under
+  // `<workspace>/.voidrift/plugins/<plugin-name>/registry.json`, inside the
+  // workspace so project-level plugin data travels with the project. A routine
+  // saved or a plan authored in one run is present in the next.
+  // Reserved core namespaces stay in memory.
+  const registryPersistence = new NodeRegistryPersistence(workspaceRoot, (message) =>
     bus.emit("ERROR_OCCURRED", { source: "registry", message }, {}),
   );
   const registryStore = new RegistryStore(registryPersistence);

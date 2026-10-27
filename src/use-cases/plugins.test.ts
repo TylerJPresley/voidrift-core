@@ -661,6 +661,64 @@ describe("Plugins capability (§12.4)", () => {
     expect(registryStore.get("a", "k")).toBeNull();
   });
 
+  it("refuses a plugin whose short name is 'node_modules', 'package.json', or 'package-lock.json' (§12.5, STAGE 1b)", async () => {
+    const errors: string[] = [];
+    const loader = fakeLoader({
+      resolved: {
+        "@x/plugin-node_modules": resolved("@x/plugin-node_modules"),
+        "@voidrift/plugin-plan": resolved("@voidrift/plugin-plan"),
+      },
+      registers: {
+        "@x/plugin-node_modules": (core: any) => core.registry.set("k", "v"),
+        "@voidrift/plugin-plan": (core: any) => core.registry.set("k", "v"),
+      },
+    });
+    const env = make(
+      {
+        "@x/plugin-node_modules": { enabled: true },
+        "@voidrift/plugin-plan": { enabled: true },
+      },
+      loader
+    );
+    env.bus.subscribe("ERROR_OCCURRED", (e) => errors.push(JSON.stringify(e.payload)));
+    await env.plugins.loadAll();
+    // The reserved-name plugin is rejected; the normal plugin loads.
+    expect(errors.some((e) => e.includes("short name is reserved"))).toBe(true);
+    expect(env.registryStore.get("@voidrift/plugin-plan", "k")).toBe("v");
+    // The normal plugin is loaded and active.
+    expect(env.plugins.list().find((p) => p.id === "@voidrift/plugin-plan")).toMatchObject({ active: true });
+    // The reserved-name plugin is not loaded (active: false).
+    expect(env.plugins.list().find((p) => p.id === "@x/plugin-node_modules")).toMatchObject({ active: false });
+  });
+
+  it("a plugin with short name 'package-json' (from plugin-package.json) is refused (§12.5, STAGE 1b)", async () => {
+    const errors: string[] = [];
+    const loader = fakeLoader({
+      resolved: { "@x/plugin-package.json": resolved("@x/plugin-package.json") },
+      registers: { "@x/plugin-package.json": () => {} },
+    });
+    const env = make({ "@x/plugin-package.json": { enabled: true } }, loader);
+    env.bus.subscribe("ERROR_OCCURRED", (e) => errors.push(JSON.stringify(e.payload)));
+    await env.plugins.loadAll();
+    expect(errors.some((e) => e.includes("short name is reserved"))).toBe(true);
+    // The plugin is not loaded.
+    expect(env.plugins.list().find((p) => p.id === "@x/plugin-package.json")).toMatchObject({ active: false });
+  });
+
+  it("a plugin with short name 'package-lock-json' (from plugin-package-lock.json) is refused (§12.5, STAGE 1b)", async () => {
+    const errors: string[] = [];
+    const loader = fakeLoader({
+      resolved: { "@x/plugin-package-lock.json": resolved("@x/plugin-package-lock.json") },
+      registers: { "@x/plugin-package-lock.json": () => {} },
+    });
+    const env = make({ "@x/plugin-package-lock.json": { enabled: true } }, loader);
+    env.bus.subscribe("ERROR_OCCURRED", (e) => errors.push(JSON.stringify(e.payload)));
+    await env.plugins.loadAll();
+    expect(errors.some((e) => e.includes("short name is reserved"))).toBe(true);
+    // The plugin is not loaded.
+    expect(env.plugins.list().find((p) => p.id === "@x/plugin-package-lock.json")).toMatchObject({ active: false });
+  });
+
   describe("project-layer plugins load exactly like global ones (§12.4.1, no workspace-trust gate)", () => {
     it("loads a project-only plugin (no trust gate)", async () => {
       let registered = false;

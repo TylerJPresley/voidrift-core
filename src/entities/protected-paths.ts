@@ -204,8 +204,31 @@ export function classifyControlPath(rawPath: string, ctx: ControlPathContext): C
     projTail ?? tailUnderRelative(canonical, ".voidrift", root);
   if (projTailResolved !== null) {
     if (DENY_CONFIG_FILES.includes(projTailResolved.toLowerCase())) return "deny";
-    if (projTailResolved.toLowerCase().startsWith("plugins/") || projTailResolved.toLowerCase() === "plugins")
-      return "deny";
+    // STAGE 1: Project plugin install artifacts and registry stores
+    const pluginsMatch = /^plugins\/([^/]+)\/(.*)$/.exec(projTailResolved.toLowerCase());
+    if (pluginsMatch) {
+      const pluginName = pluginsMatch[1] ?? "";
+      const pluginPath = pluginsMatch[2] ?? "";
+      // Install artifacts at the plugins root
+      if (pluginName === "node_modules" || pluginPath.startsWith("node_modules/") ||
+          pluginPath === "package.json" ||
+          pluginPath === "package-lock.json") {
+        return "deny";
+      }
+      // Each plugin's registry.json is DENY
+      if (pluginPath === "registry.json") {
+        return "deny";
+      }
+      // Otherwise it's a plugin's working file — ordinary
+    } else if (projTailResolved.toLowerCase().startsWith("plugins/")) {
+      // Catch root-level artifacts
+      const tail = projTailResolved.slice("plugins/".length);
+      if (tail === "node_modules" || tail.startsWith("node_modules/") ||
+          tail === "package.json" ||
+          tail === "package-lock.json") {
+        return "deny";
+      }
+    }
     if (projTailResolved.toLowerCase().startsWith("journal/") || projTailResolved.toLowerCase() === "journal")
       return "deny";
     // The rollback snapshot cache `.voidrift/cache/snapshots/` holds RAW file
@@ -224,25 +247,41 @@ export function classifyControlPath(rawPath: string, ctx: ControlPathContext): C
   if (globalTail !== null) {
     if (DENY_CONFIG_FILES.includes(globalTail.toLowerCase())) return "deny";
     if (DENY_GLOBAL_FILES.includes(globalTail.toLowerCase())) return "deny";
-    if (globalTail.toLowerCase().startsWith("plugins/") || globalTail.toLowerCase() === "plugins") return "deny";
+    // STAGE 1: Global plugin store install artifacts only (registry moved to project)
+    if (globalTail.toLowerCase().startsWith("plugins/")) {
+      const tail = globalTail.slice("plugins/".length);
+      if (tail === "node_modules" || tail.startsWith("node_modules/") ||
+          tail === "package.json" ||
+          tail === "package-lock.json") {
+        return "deny";
+      }
+      // Otherwise it's inside a plugin folder — ordinary (data, not code)
+    }
     if (globalTail.toLowerCase().startsWith("journal/") || globalTail.toLowerCase() === "journal") return "deny";
-    // The durable registry directory `<global config dir>/registry/` (§12.5) is
-    // changed ONLY through plugin commands and the `registry` CoreAPI, never by
-    // a file tool or the shell — a DENY-class control location like the plugin
-    // store and the journal.
-    if (globalTail.toLowerCase().startsWith("registry/") || globalTail.toLowerCase() === "registry") return "deny";
+    // The old global registry directory is removed (STAGE 1: registry moved to project)
     if (isProtectedCacheTail(globalTail)) return "deny";
   }
 
   // Global plugin store / journal by TAIL, independent of `ctx.globalConfigDir`
   // (owner S1, preserving the old `PROTECTED_CONTROL_DIRS` substring behaviour):
-  // any path whose normalized form contains `voidrift/plugins/` or
-  // `voidrift/journal/` (the project `.voidrift` or the global
-  // `<config>/voidrift`) is a RAW/trusted store the file and shell tools must
-  // never touch, even when the real global config dir differs from the path.
+  // any path whose normalized form contains `voidrift/journal/` is a RAW/trusted
+  // store the file and shell tools must never touch. For `voidrift/plugins/` 
+  // (STAGE 1), only the install artifacts are protected (not nested plugin data).
   const slashed = lower + "/";
-  for (const dir of ["voidrift/plugins/", "voidrift/journal/", "voidrift/cache/snapshots/", "voidrift/cache/retrieval/", "voidrift/registry/"]) {
+  for (const dir of ["voidrift/journal/", "voidrift/cache/snapshots/", "voidrift/cache/retrieval/"]) {
     if (slashed.includes("." + dir) || slashed.includes("/" + dir) || slashed.startsWith(dir)) return "deny";
+  }
+  // STAGE 1: voidrift/plugins/ substring only denies install artifacts, not nested paths
+  // Only match the exact patterns like ".voidrift/plugins/" + artifact name, not deeper paths
+  const pluginsDirMatch = /(^|\/|^\.)voidrift\/plugins\/([^/]*)(\/|$)/.exec(slashed);
+  if (pluginsDirMatch) {
+    const artifact = pluginsDirMatch[2];
+    // Only deny the install artifacts themselves
+    if (artifact === "node_modules" || artifact === "package.json" || artifact === "package-lock.json") {
+      return "deny";
+    }
+    // For plugin names followed by content (e.g., "plan/registry.json"), 
+    // we already handled it above in the exact path section. Nested paths are ordinary.
   }
 
   // ── ASK class ─────────────────────────────────────────────────────────────

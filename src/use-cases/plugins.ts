@@ -17,6 +17,7 @@ import type { PluginLoader, ResolvedPlugin } from "../adapters/plugin-loader.js"
 import { toPluginMeta, isPermissiveLicense, type PluginMeta } from "../entities/plugins/plugin-meta.js";
 import type { RegistryStore, RegistryEntry } from "../entities/registry/registry-store.js";
 import { isReservedNamespace, isReservedKey } from "../entities/registry/registry-store.js";
+import { isReservedPluginShortName } from "../entities/registry/registry-persistence.js";
 import { isMetadataHost } from "../entities/never-list.js";
 import type { Chunker } from "../entities/chunker.js";
 import { limitDefault } from "../entities/limits.js";
@@ -446,6 +447,13 @@ export class Plugins {
     // would otherwise reach the core's structural registry entries.
     if (isReservedNamespace(resolved.meta.id)) {
       this.logError(`plugin "${id}" rejected: id "${resolved.meta.id}" collides with a reserved core namespace`);
+      return null;
+    }
+    // Reserved-shortname guard (§12.5, STAGE 1b): a plugin whose short name
+    // is one of the reserved folder names is rejected at registration to prevent
+    // shadowing install artifacts.
+    if (isReservedPluginShortName(resolved.meta.id)) {
+      this.logError(`plugin "${id}" rejected: short name is reserved (§12.5)`);
       return null;
     }
     const scan = this.deps.loader.licenseScan(resolved);

@@ -32,22 +32,31 @@ describe("classifyControlPath — deny class (§8.4, §9.4)", () => {
   });
 
   it("denies the plugin store and journal (project and global)", () => {
-    expect(classifyControlPath(".voidrift/plugins/x/index.js", CTX)).toBe("deny");
+    // STAGE 1: denies install artifacts but allows plugin working files
+    expect(classifyControlPath(".voidrift/plugins/node_modules/x/index.js", CTX)).toBe("deny");
+    expect(classifyControlPath(".voidrift/plugins/package.json", CTX)).toBe("deny");
+    expect(classifyControlPath(".voidrift/plugins/package-lock.json", CTX)).toBe("deny");
+    expect(classifyControlPath(".voidrift/plugins/plan/registry.json", CTX)).toBe("deny");
+    // STAGE 1: plugin working files are ordinary (not DENY)
+    expect(classifyControlPath(".voidrift/plugins/plan/ideas/IDEA-001.md", CTX)).toBeNull();
+    expect(classifyControlPath(".voidrift/plugins/plan/notes.md", CTX)).toBeNull();
     expect(classifyControlPath(".voidrift/journal/s/0.json", CTX)).toBe("deny");
-    expect(classifyControlPath("/home/u/.config/voidrift/plugins/p.js", CTX)).toBe("deny");
-    // Independent of the configured global dir (tail match preserves old behaviour).
-    expect(classifyControlPath("/other/voidrift/plugins/p.js", CTX)).toBe("deny");
+    // Global plugin install artifacts
+    expect(classifyControlPath("/home/u/.config/voidrift/plugins/node_modules/x/index.js", CTX)).toBe("deny");
+    expect(classifyControlPath("/home/u/.config/voidrift/plugins/package.json", CTX)).toBe("deny");
+    // Independent of the configured global dir (tail match preserves old behaviour for node_modules/**).
+    expect(classifyControlPath("/other/voidrift/plugins/node_modules/x/index.js", CTX)).toBe("deny");
   });
 
-  it("denies the durable registry dir under the global config dir (§12.5)", () => {
-    expect(classifyControlPath("/home/u/.config/voidrift/registry/abc123/p.json", CTX)).toBe("deny");
-    expect(classifyControlPath("~/.config/voidrift/registry/abc123/p.json", CTX)).toBe("deny");
-    expect(classifyControlPath("$XDG_CONFIG_HOME/voidrift/registry/abc/p.json", CTX)).toBe("deny");
-    // Independent of the configured global dir (tail-match like the plugin store).
-    expect(classifyControlPath("/other/voidrift/registry/abc/p.json", CTX)).toBe("deny");
-    // A `.voidrift/registry/**` SHIPPED in the workspace tree is also refused by
-    // the file/shell tools (it is never READ by the store, which lives globally).
-    expect(classifyControlPath(".voidrift/registry/abc/p.json", CTX)).toBe("deny");
+  it("denies the durable registry dir under the global config dir (§12.5, STAGE 1 DEPRECATED)", () => {
+    // STAGE 1: the old global registry location is no longer DENY (registry moved to project)
+    expect(classifyControlPath("/home/u/.config/voidrift/registry/abc123/p.json", CTX)).toBeNull();
+    expect(classifyControlPath("~/.config/voidrift/registry/abc123/p.json", CTX)).toBeNull();
+    expect(classifyControlPath("$XDG_CONFIG_HOME/voidrift/registry/abc/p.json", CTX)).toBeNull();
+    // Independent of the configured global dir (no longer a protected location).
+    expect(classifyControlPath("/other/voidrift/registry/abc/p.json", CTX)).toBeNull();
+    // A `.voidrift/registry/**` shipped in the workspace tree (from an old clone) is also no longer refused
+    expect(classifyControlPath(".voidrift/registry/abc/p.json", CTX)).toBeNull();
   });
 
   it("denies the rollback snapshot cache but NOT other cache entries (§10.12)", () => {
@@ -71,8 +80,12 @@ describe("classifyControlPath — deny class (§8.4, §9.4)", () => {
   });
 
   it("resolves .. traversal into a deny path", () => {
+    // Traversals that resolve to config or plugin registry are DENY
     expect(classifyControlPath(".voidrift/a/../config.json", CTX)).toBe("deny");
-    expect(classifyControlPath(".voidrift/x/../plugins/evil.js", CTX)).toBe("deny");
+    expect(classifyControlPath(".voidrift/plugins/plan/x/../registry.json", CTX)).toBe("deny");
+    // STAGE 1: .voidrift/x/../plugins/evil.js -> .voidrift/plugins/evil.js, 
+    // which is a plugin folder name (not an install artifact or registry), so ordinary
+    expect(classifyControlPath(".voidrift/x/../plugins/evil.js", CTX)).toBeNull();
   });
 
   it("folds backslashes and is case-insensitive on the tail", () => {
@@ -141,7 +154,8 @@ describe("classifyControlPath — null (not a control path / unresolvable)", () 
 
   it("handles trailing slashes on a directory path", () => {
     expect(classifyControlPath(".voidrift/agents/", CTX)).toBe("ask");
-    expect(classifyControlPath(".voidrift/plugins/", CTX)).toBe("deny");
+    // STAGE 1: .voidrift/plugins/ as a bare directory is ordinary (plugin folders are not DENY)
+    expect(classifyControlPath(".voidrift/plugins/", CTX)).toBeNull();
   });
 });
 

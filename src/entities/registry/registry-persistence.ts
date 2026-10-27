@@ -7,16 +7,14 @@
  * tiny, synchronous contract so the store can serialize writes in-process and a
  * test can swap an in-memory adapter for the real filesystem one.
  *
- * One JSON file per (workspace, plugin) at
- * `<global config dir>/registry/<workspace key>/<plugin id file-safe>.json`,
- * where the workspace key is the first 16 hex characters of the SHA-256 of the
- * workspace real path and the plugin id is made file-safe. The store lives
- * OUTSIDE the workspace on purpose — a cloned repository cannot ship routines or
- * plans, and a registry file dropped in the workspace tree is ignored. Files are
+ * STAGE 1 (2026-10-27): One JSON file per plugin at
+ * `<workspace>/.voidrift/plugins/<name>/registry.json`, where `<name>` is the
+ * plugin's SHORT name (its id with the scope and the `plugin-` prefix stripped,
+ * lowercased with non-alphanumerics turned to hyphens). The store lives INSIDE
+ * the workspace so project-level plugin data travels with the project. Files are
  * `0600`, directories `0700`, and every write is atomic (temp file + `rename`).
  */
 
-import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -34,6 +32,40 @@ export const REGISTRY_FILE_MAX_BYTES = 1024 * 1024;
 
 /** The 64 KiB per-value cap (§12.5): a larger value is refused at write. */
 export const REGISTRY_VALUE_MAX_BYTES = 64 * 1024;
+
+/**
+ * Derive the plugin's SHORT name from its id: scope and `plugin-` prefix stripped,
+ * lowercased, non-alphanumerics turned to hyphens. Used as the folder name under
+ * `.voidrift/plugins/` and to derive the registry file path (§12.5).
+ * @voidrift/plugin-plan -> plan
+ */
+export function pluginShortName(id: string): string {
+  // Strip @scope/ prefix
+  let name = id.replace(/^@[^/]+\//, "");
+  // Strip plugin- prefix
+  name = name.replace(/^plugin-/, "");
+  // Lowercase and replace non-alphanumerics with hyphens
+  name = name.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+  // Collapse repeated hyphens and trim edges
+  name = name.replace(/-+/g, "-").replace(/^-+|-+$/g, "");
+  return name;
+}
+
+/**
+ * Reserved plugin folder names (§12.5, STAGE 1b): a plugin whose short name
+ * is one of these is refused at registration to prevent shadowing install
+ * artifacts that live directly under `.voidrift/plugins/`. These are the
+ * NORMALIZED short names (after lowercasing and replacing non-alphanumerics
+ * with hyphens).
+ */
+const RESERVED_PLUGIN_SHORTNAMES = new Set(["node-modules", "package-json", "package-lock-json"]);
+
+/**
+ * True when a plugin's short name is reserved (§12.5, STAGE 1b).
+ */
+export function isReservedPluginShortName(id: string): boolean {
+  return RESERVED_PLUGIN_SHORTNAMES.has(pluginShortName(id));
+}
 
 /**
  * The persistence port the durable `RegistryStore` drives. Synchronous to match
@@ -54,54 +86,35 @@ export interface RegistryPersistencePort {
 /** A warning sink: one line naming a set-aside file (§12.5). */
 export type RegistryWarn = (message: string) => void;
 
-/** The 16-hex workspace key: the first 16 hex of SHA-256 of the real path. */
-export function workspaceKey(workspaceRealPath: string): string {
-  return createHash("sha256").update(workspaceRealPath).digest("hex").slice(0, 16);
-}
-
-/** Make a plugin id file-safe: keep `[a-z0-9._-]`, replace the rest with `_`,
- * and bound the length so a hostile id cannot overflow a path. A collision is
- * acceptable (two ids mapping to one file is a plugin-author problem, not a
- * safety one); the value remains namespaced in memory by the raw id. */
-export function fileSafePluginId(id: string): string {
-  const safe = id.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 128);
-  return safe === "" ? "_" : safe;
-}
-
 /**
- * The real filesystem adapter (§12.5). Writes outside the workspace under the
- * global config dir; dirs `0700`, files `0600`, atomic temp+rename. A malformed,
- * wrong-version, non-object, or over-cap file is set aside byte-for-byte as
- * `<file>.rejected` with one warning and the plugin starts empty. Uses raw node
- * fs (never the workspace `FileSystemPort`) because the store is deliberately
- * outside the workspace sandbox.
+ * The real filesystem adapter (§12.5, STAGE 1). Writes inside the workspace at
+ * `.voidrift/plugins/<short-name>/registry.json`; dirs `0700`, files `0600`,
+ * atomic temp+rename. A malformed, wrong-version, non-object, or over-cap file
+ * is set aside byte-for-byte as `registry.json.rejected` with one warning and
+ * the plugin starts empty. Uses raw node fs to avoid FileSystemPort containment
+ * constraints that would prevent writing to `.voidrift/`.
  */
 export class NodeRegistryPersistence implements RegistryPersistencePort {
-  private readonly dir: string;
+  private readonly baseDir: string;
 
   constructor(
-    globalConfigDir: string,
-    workspaceRealPath: string,
+    workspaceRoot: string,
     private readonly warn: RegistryWarn = () => {},
   ) {
-    this.dir = path.join(globalConfigDir, "registry", workspaceKey(this.resolveReal(workspaceRealPath)));
+    this.baseDir = path.join(workspaceRoot, ".voidrift", "plugins");
   }
 
-  /** The directory this adapter writes into (for a doctor STORAGE check). */
+  /** The base plugins directory for this adapter (for doctor STORAGE check). */
   directory(): string {
-    return this.dir;
+    return this.baseDir;
   }
 
-  private resolveReal(p: string): string {
-    try {
-      return fs.realpathSync.native(p);
-    } catch {
-      return path.resolve(p);
-    }
+  private pluginDir(namespace: string): string {
+    return path.join(this.baseDir, pluginShortName(namespace));
   }
 
   private fileFor(namespace: string): string {
-    return path.join(this.dir, `${fileSafePluginId(namespace)}.json`);
+    return path.join(this.pluginDir(namespace), "registry.json");
   }
 
   load(namespace: string): Record<string, unknown> {
@@ -132,10 +145,11 @@ export class NodeRegistryPersistence implements RegistryPersistencePort {
   }
 
   save(namespace: string, entries: Record<string, unknown>): void {
-    fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    const pluginDir = this.pluginDir(namespace);
+    fs.mkdirSync(pluginDir, { recursive: true, mode: 0o700 });
     // Harden the dir mode even if it pre-existed with a looser mode.
     try {
-      fs.chmodSync(this.dir, 0o700);
+      fs.chmodSync(pluginDir, 0o700);
     } catch {
       /* best effort */
     }
