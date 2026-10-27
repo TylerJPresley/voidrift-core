@@ -43,6 +43,8 @@ Documents marked stale after a fold must be re-read before you use them for a wr
 
 ## What to do as your window fills
 
+Each turn your environment block shows the remaining context percentage (§4.4). Use it to decide how much to load before you read a large file.
+
 The application triggers compaction automatically — you cannot call `session.compact`. What you can observe: as context fills, old tool results are replaced by cache pointers (you can still read them on demand), and when a turn is folded, its documents are marked [STALE] and must be re-read before you edit them. To manage your context effectively:
 
 - Keep tool output you ask for small and focused.
