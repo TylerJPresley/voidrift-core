@@ -18,9 +18,9 @@ import type { ResolvedModel } from "../entities/ports/model-port.js";
 import type { ModelConfigEntry } from "../config/schema.js";
 import { seededPermissionsRecord } from "../test-support/seed-rules.js";
 
-/** A tiny 4k window: 10% ⇒ ~400-token (~1600-char) eviction threshold. */
+/** A 16k window: 10% ⇒ ~1600-token (~6400-char) eviction threshold. */
 const seed = {
-  models: { t: { model: "t", protocol: "openai", contextLimit: 4_000 } },
+  models: { t: { model: "t", protocol: "openai", contextLimit: 16_000 } },
   modelSelected: "t",
   // Seeded allow list (§13.8): read_file is free by rule, not by read-class (§9).
   permissions: seededPermissionsRecord(),
