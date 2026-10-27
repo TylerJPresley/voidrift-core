@@ -222,7 +222,7 @@ export const LIMITS: readonly LimitSpec[] = [
   { key: "mcp.readyGraceMs", area: "mcp", default: 5000, unit: "ms", class: "tunable", action: "warn", min: 0, max: 120_000, doc: "how long a turn waits once for MCP auto-connect to finish", inv: "MCP3" },
 
   // --- plugins (H) ---
-  { key: "plugins.optionsMaxBytes", area: "plugins", default: 64 * KIB, unit: "bytes", class: "safety", action: "warn", min: 1, max: 16 * MIB, doc: "Plugin options byte cap (payload bound).", inv: "PLG1", schemaTimeOnly: "enforced at config-validation time by PLUGIN_OPTIONS_MAX_BYTES in config/schema.ts, before the limits capability exists; the schema const reads this registry default" },
+  { key: "plugins.optionsMaxBytes", area: "plugins", default: 64 * KIB, unit: "bytes", class: "safety", action: "warn", min: 1, max: 16 * MIB, doc: "Plugin options byte cap (payload bound).", inv: "PLG1", schemaTimeOnly: "schema accepts any size at validation; runtime check in plugins.ts loadResolved() enforces this limit with the effective action (warn → accept + emit, deny → refuse)" },
   { key: "plugins.searchMaxBytes", area: "plugins", default: 5_000_000, unit: "bytes", class: "safety", action: "deny", min: 1, max: 1 * GIB, doc: "Plugin registry search response byte cap.", inv: "PLG2a" },
   { key: "plugins.installMaxBytes", area: "plugins", default: 100_000_000, unit: "bytes", class: "safety", action: "deny", min: 1, max: 16 * GIB, doc: "Plugin install payload byte cap.", inv: "PLG2b" },
   { key: "plugins.listPageDefault", area: "plugins", default: 20, unit: "count", class: "tunable", action: "warn", min: 1, max: 250, doc: "Plugin list default page size.", inv: "PLG3" },

@@ -39,6 +39,14 @@ export class LimitsCapability implements LimitsPort {
     return effectiveLimit(this.resolved, key);
   }
 
+  /** §13.11 — read the effective limit action (warn or deny) for a key.
+   * Used at plugin load time to enforce the layered action on options size. */
+  action(key: string): "warn" | "deny" {
+    const entry = this.resolved.values.get(key);
+    const spec = getLimitSpec(key);
+    return entry?.action ?? (spec?.action ?? "warn");
+  }
+
   /** §8.7 — the effective ingest fan-out cap: `limits.ingest.maxParallel` when a
    * layer set it, otherwise `turnMaxConcurrency` (the "unset = follow" default).
    * The ingest fan-out passes this to `Subagents.dispatch` so its cap is explicit

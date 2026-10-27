@@ -20,7 +20,7 @@ import { isReservedNamespace, isReservedKey } from "../entities/registry/registr
 import { isReservedPluginShortName } from "../entities/registry/registry-persistence.js";
 import { isMetadataHost } from "../entities/never-list.js";
 import type { Chunker } from "../entities/chunker.js";
-import { limitDefault } from "../entities/limits.js";
+import { limitDefault, getLimitSpec } from "../entities/limits.js";
 import { coreError, err, ok, ErrorCode, type Result } from "../entities/errors.js";
 import type { ConfigLayer, PluginEntry } from "../config/schema.js";
 import type { PluginRegistryPort, PluginInstallerPort } from "../entities/ports/plugin-registry-port.js";
@@ -419,6 +419,10 @@ export interface PluginsDeps {
    * can only READ (never set). Absent → `core.limits.get` returns the registry
    * default (so a plugin has a safe default when the accessor is unwired). */
   getLimit?: (key: string) => number;
+  /** §13.11 — read-only access to the effective limit action (warn or deny) for a
+   * key. Used at plugin load time to enforce the layered action on options size.
+   * Absent → defaults to the registry default action (warn). */
+  getLimitAction?: (key: string) => "warn" | "deny";
 }
 
 export class Plugins {
@@ -512,6 +516,16 @@ export class Plugins {
    * and retrieval plugins read (`options.config`, `options.deps`, backends). */
   private async loadResolved(resolved: ResolvedPlugin, source: ConfigLayer = "global", options: Record<string, unknown> = {}): Promise<void> {
     if (this.loaded.has(resolved.meta.id)) return;
+
+    // §12.4, §13.11 — check options size against the layered limit and resolve
+    // the action (warn → accept + emit LIMIT_HIT, deny → refuse). Enforce at load
+    // time where we have access to resolved limits.
+    const optionsSizeCheck = this.checkOptionsSize(options);
+    if (!optionsSizeCheck.ok) {
+      this.logError(`plugin "${resolved.meta.id}" failed: ${optionsSizeCheck.error.message}`);
+      return;
+    }
+
     const contributions = emptyContributions();
     const scoped = this.makeScoped(resolved.meta.id, contributions, resolved.realPath);
     try {
@@ -528,6 +542,62 @@ export class Plugins {
       // Contained: tear down anything partially registered, log, never throw.
       this.teardown(contributions, resolved.meta.id);
       this.logError(`plugin "${resolved.meta.id}" failed on register: ${String(e)}`);
+    }
+  }
+
+  /** Check if plugin options exceed the layered limit size and handle appropriately
+   * (§12.4, §13.11): warn → accept + emit LIMIT_HIT; deny → refuse. */
+  private checkOptionsSize(options: Record<string, unknown>): Result<void> {
+    const spec = getLimitSpec("plugins.optionsMaxBytes");
+    if (!spec) {
+      // Registry is incomplete; should never happen in production, but allow
+      // loading if the limit spec is missing (defensive).
+      return ok(void 0);
+    }
+
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(options);
+    } catch {
+      // Non-serializable options should have been caught at schema validation;
+      // this is defense in depth.
+      return err(coreError(ErrorCode.CONFIG_INVALID, "plugin options are not JSON-serializable"));
+    }
+
+    const bytes = Buffer.byteLength(serialized, "utf8");
+    const cap = this.deps.getLimit?.("plugins.optionsMaxBytes") ?? spec.default;
+    const action = this.deps.getLimitAction?.("plugins.optionsMaxBytes") ?? spec.action;
+
+    if (bytes <= cap) {
+      return ok(void 0); // Within limit, no hit to report
+    }
+
+    // Limit exceeded; apply the action
+    if (action === "warn") {
+      // Warn action: accept the options and emit LIMIT_HIT
+      const notice = `plugins optionsMaxBytes: ${bytes} bytes exceeded the ${cap}-byte limit`;
+      this.deps.bus.emit(
+        "LIMIT_HIT",
+        {
+          key: spec.key,
+          area: spec.area,
+          value: cap,
+          action: "warn" as const,
+          observed: bytes,
+          notice,
+        },
+        {},
+      );
+      return ok(void 0); // Allow the plugin to load
+    } else {
+      // Deny action: refuse with a typed error
+      return err(
+        coreError(
+          ErrorCode.CONFIG_INVALID,
+          `plugin options exceed the ${cap}-byte limit (${bytes} bytes)`,
+          { field: "options" },
+        ),
+      );
     }
   }
 

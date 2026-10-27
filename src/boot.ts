@@ -1779,6 +1779,9 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
     // §13.11 — read-only effective-limits accessor for the plugin
     // `core.limits.get(key)` surface (a plugin reads, never sets).
     getLimit: (key: string) => limits.get(key),
+    // §13.11 — read-only effective limit action (warn or deny) for a key.
+    // Used at plugin load time to enforce the layered action on options size.
+    getLimitAction: (key: string) => limits.action(key),
     // §12.4.1 — per-layer provenance so `plugins.list` can report which layer
     // each plugin came from and a project-layer load is logged at info level.
     // Records merge by id (narrower layer replaces the same id); a project entry

@@ -477,14 +477,12 @@ export const WebSearchSchema = z
 
 export type WebSearchConfig = z.infer<typeof WebSearchSchema>;
 
-/** Plugin options cap (§12.4): a plain-JSON object the loader hands a plugin's
- * `register(core, options)` verbatim — bounded so a config layer cannot smuggle
- * a huge or non-serializable payload past validation. */
-export const PLUGIN_OPTIONS_MAX_BYTES = 64 * 1024;
-
 /** Validate a plugin `options` value: a plain JSON object (no functions, no
- * cycles), serializable, and ≤ 64 KiB. Secrets belong in it only as env-var
- * NAMES — the plugin resolves them from `process.env` at use time (§12.4). */
+ * cycles), serializable. The byte-size cap is enforced at plugin load time
+ * (§12.4) using the layered `limits.plugins.optionsMaxBytes` action: warn
+ * (accept + emit LIMIT_HIT) or deny (refuse with a typed error). Secrets belong
+ * in it only as env-var NAMES — the plugin resolves them from `process.env` at
+ * use time (§12.4). */
 const PluginOptionsSchema = z
   .record(z.string(), z.unknown())
   .superRefine((value, ctx) => {
@@ -499,9 +497,8 @@ const PluginOptionsSchema = z
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: "plugin options must be a plain JSON object" });
       return;
     }
-    if (Buffer.byteLength(serialized, "utf8") > PLUGIN_OPTIONS_MAX_BYTES) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, message: `plugin options exceed the ${PLUGIN_OPTIONS_MAX_BYTES}-byte cap` });
-    }
+    // Byte-size validation moved to runtime (plugin-loader call site) where we can
+    // honor the layered limit action (warn → accept + emit LIMIT_HIT, deny → refuse).
   });
 
 /** A plugin entry in `config.plugins` (§12.4): a package or path, enablement.

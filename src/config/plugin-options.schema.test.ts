@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { PluginEntrySchema, PLUGIN_OPTIONS_MAX_BYTES } from "./schema.js";
+import { PluginEntrySchema } from "./schema.js";
 
 describe("PluginEntrySchema options (§12.4)", () => {
   it("accepts a plain-JSON options object", () => {
@@ -15,10 +15,10 @@ describe("PluginEntrySchema options (§12.4)", () => {
     expect(r.success).toBe(true);
   });
 
-  it("rejects options that exceed the 64 KiB cap", () => {
-    const big = "x".repeat(PLUGIN_OPTIONS_MAX_BYTES + 1);
+  it("accepts oversized options at schema validation time (runtime check happens at plugin load)", () => {
+    const big = "x".repeat(100 * 1024);
     const r = PluginEntrySchema.safeParse({ enabled: true, options: { blob: big } });
-    expect(r.success).toBe(false);
+    expect(r.success).toBe(true); // Size check is now at plugin load time
   });
 
   it("rejects a non-object options value", () => {

@@ -29,6 +29,26 @@ describe("LimitsCapability", () => {
     expect(() => limits.get("nope.nope")).toThrow();
   });
 
+  it("action returns the effective action for a key (§13.11)", () => {
+    const { limits } = setup();
+    // memory.projectChars has default action 'warn'
+    expect(limits.action("memory.projectChars")).toBe("warn");
+    // tools.commandOutputMaxBytes also has default action 'warn'
+    expect(limits.action("tools.commandOutputMaxBytes")).toBe("warn");
+  });
+
+  it("action returns a configured action when set", () => {
+    const bus = new EventBus();
+    const resolved = resolveLimits([
+      {
+        layer: "project",
+        limits: { memory: { projectChars: { value: 4000, action: "deny" as const } } },
+      },
+    ]);
+    const limits = new LimitsCapability(resolved, bus);
+    expect(limits.action("memory.projectChars")).toBe("deny");
+  });
+
   it("hit emits LIMIT_HIT once per key per turn", () => {
     const { limits, events } = setup();
     const r1 = limits.hit("memory.projectChars", 9000, { what: "project instructions truncated" });
