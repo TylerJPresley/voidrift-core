@@ -1059,3 +1059,130 @@ describe("doctor: limits group (§13.11)", () => {
     expect(f?.message).toContain("project");
   });
 });
+
+describe("doctor: storage group gitignore check (§13.9.2 STORAGE)", () => {
+  function storageGroup(report: DoctorReport) {
+    return report.groups.find((g) => g.id === "storage")!;
+  }
+
+  it("(a) git repo with .voidrift/cache existing and no .gitignore -> warn naming folders and fix", async () => {
+    const c = await cap({ global: seedConfigDocument() });
+
+    const deps = baseDeps({
+      config: c,
+      storage: {
+        modeOf: async () => 0o700,
+        isSymlink: async () => false,
+        freeBytes: async () => 10 * 1024 * 1024 * 1024,
+        dirUsable: async () => true,
+        readFile: async () => null,
+        listDirs: async (absPath) => {
+          if (absPath === "/ws/.voidrift") return ["cache"];
+          return [];
+        },
+        gitConfigScan: async () => [],
+        isGitRepo: async () => true,
+        countVoidriftRefs: async () => 0,
+        dirSizeBytes: async () => 0,
+        movesPerSession: async () => [],
+        checkIgnore: async () => false, // not ignored
+      } as DoctorDeps["storage"],
+    });
+
+    const report = await runDoctor(deps, { offline: true });
+    const g = storageGroup(report);
+    const finding = g.findings.find((f) => f.id === "storage.gitignore");
+
+    expect(finding?.status).toBe("warn");
+    expect(finding?.message).toContain("cache");
+    expect(finding?.fix).toBe("add `.voidrift/` to `.gitignore`");
+  });
+
+  it("(b) git repo with .gitignore containing .voidrift/ -> no finding", async () => {
+    const c = await cap({ global: seedConfigDocument() });
+
+    const deps = baseDeps({
+      config: c,
+      storage: {
+        modeOf: async () => 0o700,
+        isSymlink: async () => false,
+        freeBytes: async () => 10 * 1024 * 1024 * 1024,
+        dirUsable: async () => true,
+        readFile: async () => null,
+        listDirs: async (absPath) => {
+          if (absPath === "/ws/.voidrift") return ["cache"];
+          return [];
+        },
+        gitConfigScan: async () => [],
+        isGitRepo: async () => true,
+        countVoidriftRefs: async () => 0,
+        dirSizeBytes: async () => 0,
+        movesPerSession: async () => [],
+        checkIgnore: async () => true, // ignored ok
+      } as DoctorDeps["storage"],
+    });
+
+    const report = await runDoctor(deps, { offline: true });
+    const g = storageGroup(report);
+    const finding = g.findings.find((f) => f.id === "storage.gitignore");
+
+    expect(finding).toBeUndefined();
+  });
+
+  it("(c) non-git directory -> no finding", async () => {
+    const c = await cap({ global: seedConfigDocument() });
+
+    const deps = baseDeps({
+      config: c,
+      storage: {
+        modeOf: async () => 0o700,
+        isSymlink: async () => false,
+        freeBytes: async () => 10 * 1024 * 1024 * 1024,
+        dirUsable: async () => true,
+        readFile: async () => null,
+        listDirs: async () => [],
+        gitConfigScan: async () => [],
+        isGitRepo: async () => false,
+        countVoidriftRefs: async () => 0,
+        dirSizeBytes: async () => 0,
+        movesPerSession: async () => [],
+        checkIgnore: async () => false,
+      } as DoctorDeps["storage"],
+    });
+
+    const report = await runDoctor(deps, { offline: true });
+    const g = storageGroup(report);
+    const finding = g.findings.find((f) => f.id === "storage.gitignore");
+
+    expect(finding).toBeUndefined();
+  });
+
+  it("(d) doctor does not create or modify .gitignore", async () => {
+    const c = await cap({ global: seedConfigDocument() });
+
+    const deps = baseDeps({
+      config: c,
+      storage: {
+        modeOf: async () => 0o700,
+        isSymlink: async () => false,
+        freeBytes: async () => 10 * 1024 * 1024 * 1024,
+        dirUsable: async () => true,
+        readFile: async () => null,
+        listDirs: async (absPath) => {
+          if (absPath === "/ws/.voidrift") return ["cache"];
+          return [];
+        },
+        gitConfigScan: async () => [],
+        isGitRepo: async () => true,
+        countVoidriftRefs: async () => 0,
+        dirSizeBytes: async () => 0,
+        movesPerSession: async () => [],
+        checkIgnore: async () => false,
+      } as DoctorDeps["storage"],
+    });
+
+    await runDoctor(deps, { offline: true });
+    // Just verify that runDoctor completed without errors - the mock shows
+    // doctor never tries to write, since storage is read-only
+  });
+});

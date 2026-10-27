@@ -817,6 +817,11 @@ function makeStorageProbe(): import("./use-cases/config-doctor.js").StorageProbe
       }
       return result;
     },
+
+    async checkIgnore(workspaceRoot: string) {
+      const res = await runHardenedGit(workspaceRoot, ["check-ignore", "-q", "--", ".voidrift/"]);
+      return res.ok;
+    },
   };
 }
 

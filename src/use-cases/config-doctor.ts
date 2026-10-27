@@ -128,6 +128,14 @@ export interface StorageProbe {
    * or holds none. Reads no git. */
   gitConfigScan(workspaceRoot: string): Promise<string[]>;
 
+  // ── VCS checks (STORAGE group), read-only. Optional: a probe that does not
+  // supply it disables the VCS-specific storage checks. ──
+  /** Check if a path is ignored by the workspace `.gitignore`. Returns true when
+   * the path IS ignored (exit 0), false when NOT ignored (exit 1) or when not a
+   * repo/error (exit 128+). Uses hardened git. Optional: when absent, gitignore
+   * checks are skipped. */
+  checkIgnore?(workspaceRoot: string): Promise<boolean>;
+
   // ── Rollback (§10.12), all read-only. Optional: a probe that does not supply
   // them disables the rollback-specific checks (the group still reports method
   // and snapshotCount from config alone). ──
@@ -1172,6 +1180,47 @@ async function checkStorage(ctx: Ctx): Promise<DoctorFinding[]> {
         { file: `${workspaceRoot}/.git/config` },
       ),
     );
+  }
+
+  // The workspace `.voidrift/` state dir must be in `.gitignore` when the
+  // workspace is a git repo (core-blueprint §13.9.2). Doctor checks this by
+  // running `git check-ignore -q -- .voidrift/` through the hardened runner
+  // (exit 0 = ignored ok, exit 1 = not ignored warn, 128+ = not a repo or error
+  // = no finding). Lists existing folders under `.voidrift/` for the warning.
+  if (st.checkIgnore) {
+    const isRepo = st.isGitRepo ? await st.isGitRepo(workspaceRoot) : false;
+    if (isRepo) {
+      const ignored = await st.checkIgnore(workspaceRoot);
+      if (!ignored) {
+        // List which folders actually exist under .voidrift
+        const voidriftDir = `${workspaceRoot}/.voidrift`;
+        const existingFolders = await st.listDirs(voidriftDir);
+        // Add known folder names that might not exist yet for the message
+        const knownFolders = ["cache", "sessions", "journal", "logs"];
+        const allFolders = new Set(existingFolders);
+        for (const name of knownFolders) allFolders.add(name);
+        // Also check for plugin dirs
+        const pluginsDir = `${voidriftDir}/plugins`;
+        try {
+          const pluginDirs = await st.listDirs(pluginsDir);
+          for (const dir of pluginDirs) allFolders.add(`plugins/${dir}`);
+        } catch {
+          // plugins dir doesn't exist yet
+        }
+        const folderList = Array.from(allFolders)
+          .filter((f) => existingFolders.includes(f) || knownFolders.includes(f))
+          .sort()
+          .join(", ");
+        out.push(
+          warnF(
+            "storage.gitignore",
+            `workspace .voidrift/ directory (${folderList}) is not matched by .gitignore`,
+            "add `.voidrift/` to `.gitignore`",
+            { file: `${workspaceRoot}/.gitignore` },
+          ),
+        );
+      }
+    }
   }
 
   // The durable registry dir `<config dir>/registry/<workspace key>` (§12.5):
