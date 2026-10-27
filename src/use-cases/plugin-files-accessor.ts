@@ -64,6 +64,11 @@ export class PluginFilesAccessor {
   /**
    * Refuse a path if it attempts traversal, is absolute, escapes via symlink,
    * or is `registry.json`. Returns the absolute resolved path if valid.
+   * 
+   * Security: walks up to the nearest EXISTING ancestor, realpaths it, re-attaches
+   * the non-existent tail, and verifies the result is inside realPluginRoot.
+   * This catches symlinks that hide in dirname components of new files.
+   * For dangling symlinks, reads the symlink target and checks if it points outside.
    */
   private validatePath(relPath: string): string {
     if (typeof relPath !== "string") {
@@ -86,28 +91,75 @@ export class PluginFilesAccessor {
     // Resolve under the plugin folder (defense in depth)
     const abs = nodePath.resolve(this.deps.pluginFolder, relPath);
 
-    // Check containment using the pre-resolved real plugin root
-    // The resolved path must be inside realPluginRoot
-    const absDirName = nodePath.dirname(abs);
-    const realAbsDirName = absDirName.startsWith(this.realPluginRoot)
-      ? absDirName
-      : nodePath.resolve(fs.existsSync(absDirName) ? fs.realpathSync(absDirName) : absDirName);
-
-    if (!realAbsDirName.startsWith(this.realPluginRoot) && realAbsDirName !== this.realPluginRoot) {
-      throw new PluginFileAccessError(`refuses path: escapes plugin folder`);
+    // Find the deepest EXISTING ancestor of abs (using lstatSync to handle dangling symlinks)
+    let current = abs;
+    let suffix = "";
+    while (current !== nodePath.dirname(current)) {
+      try {
+        fs.lstatSync(current); // lstatSync works on dangling symlinks
+        break;
+      } catch {
+        suffix = nodePath.sep + nodePath.basename(current) + suffix;
+        current = nodePath.dirname(current);
+      }
     }
 
-    // For existing files/directories, verify the real path stays inside the plugin folder.
-    // This catches symlinks that point outside the plugin folder.
+    // Check all path components from root down to abs for symlinks pointing outside
+    // This catches both existing and dangling symlinks that escape the plugin root
+    let checkPath = this.realPluginRoot;
+    const pathParts = nodePath.relative(this.realPluginRoot, abs).split(nodePath.sep).filter(p => p);
+    
+    for (const part of pathParts) {
+      checkPath = nodePath.join(checkPath, part);
+      try {
+        // Use lstatSync to handle dangling symlinks
+        const stat = fs.lstatSync(checkPath);
+        if (stat.isSymbolicLink()) {
+          // Found a symlink; resolve where it points
+          const target = nodePath.resolve(fs.readlinkSync(checkPath));
+          if (
+            target !== this.realPluginRoot &&
+            !target.startsWith(this.realPluginRoot + nodePath.sep)
+          ) {
+            throw new PluginFileAccessError(`refuses path: symlink escape`);
+          }
+        }
+      } catch (err) {
+        if (err instanceof PluginFileAccessError) throw err;
+        // lstatSync throws ENOENT if path doesn't exist; continue to check others
+      }
+    }
+
+    // Realpath the existing ancestor
+    const realAncestor = fs.existsSync(current)
+      ? nodePath.resolve(fs.realpathSync(current))
+      : current;
+
+    // Re-attach the non-existent tail
+    const resolved = suffix ? nodePath.join(realAncestor, suffix) : realAncestor;
+
+    // Require resolved path to be inside realPluginRoot (with path separator check)
+    if (
+      resolved !== this.realPluginRoot &&
+      !resolved.startsWith(this.realPluginRoot + nodePath.sep)
+    ) {
+      throw new PluginFileAccessError(`refuses path: symlink escape`);
+    }
+
+    // For existing targets, also realpath them to double-check
     if (fs.existsSync(abs)) {
       try {
-        const real = nodePath.resolve(fs.realpathSync(abs));
-        if (!real.startsWith(this.realPluginRoot + nodePath.sep) && real !== this.realPluginRoot) {
+        const realTarget = nodePath.resolve(fs.realpathSync(abs));
+        if (
+          realTarget !== this.realPluginRoot &&
+          !realTarget.startsWith(this.realPluginRoot + nodePath.sep)
+        ) {
           throw new PluginFileAccessError(`refuses path: symlink escape`);
         }
       } catch (err) {
         if (err instanceof PluginFileAccessError) throw err;
-        // If realpathSync failed, allow it (path doesn't exist yet or other read errors)
+        // If realpathSync fails, propagate it
+        throw err;
       }
     }
 
@@ -118,6 +170,7 @@ export class PluginFilesAccessor {
    * List files and directories in the plugin folder, optionally filtering by
    * subpath. Returns metadata (name, kind, bytes, mtimeMs) without contents.
    * Symlinks are reported as their own kind, not followed.
+   * Throws PluginFileAccessError if subpath escapes or contains symlink attacks.
    */
   async list(subpath?: string): Promise<PluginFileEntry[]> {
     try {
@@ -171,7 +224,9 @@ export class PluginFilesAccessor {
       };
       recur(scanPath, subpath ? "" : "");
       return entries.sort((a, b) => a.name.localeCompare(b.name));
-    } catch {
+    } catch (err) {
+      // Validation errors (symlink escapes) must propagate
+      if (err instanceof PluginFileAccessError) throw err;
       return [];
     }
   }
@@ -217,6 +272,33 @@ export class PluginFilesAccessor {
     }
 
     const abs = this.validatePath(path);
+    const dir = nodePath.dirname(abs);
+
+    // Security: check that we can safely create parent directories
+    // Ensure no symlink in the directory chain leads outside the plugin root
+    let checkDir = this.realPluginRoot;
+    const dirParts = nodePath.relative(this.realPluginRoot, dir).split(nodePath.sep).filter(p => p);
+    
+    for (const part of dirParts) {
+      checkDir = nodePath.join(checkDir, part);
+      try {
+        if (fs.existsSync(checkDir)) {
+          const stat = fs.lstatSync(checkDir);
+          if (stat.isSymbolicLink()) {
+            const target = nodePath.resolve(fs.readlinkSync(checkDir));
+            if (
+              target !== this.realPluginRoot &&
+              !target.startsWith(this.realPluginRoot + nodePath.sep)
+            ) {
+              throw new PluginFileAccessError(`refuses path: symlink escape`);
+            }
+          }
+        }
+      } catch (err) {
+        if (err instanceof PluginFileAccessError) throw err;
+        // Continue on other errors
+      }
+    }
 
     // Secret-mask the body before writing
     const masked = maskValue(body) as string;
@@ -240,7 +322,6 @@ export class PluginFilesAccessor {
     }
 
     // Create parent directories
-    const dir = nodePath.dirname(abs);
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 
     // Atomic write: temp file + rename

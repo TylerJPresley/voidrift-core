@@ -259,46 +259,192 @@ describe("PluginFilesAccessor (§12.5, §10.11)", () => {
     }
   });
 
-  it("MUTATION PROOF: removing journal.record call breaks journaling test", async () => {
-    // If journal.record is removed from write(), recordCalled stays false
+  // SECURITY: Symlinked directory escape tests (core vulnerability fix)
+  it("refuses write/read/list/remove on symlinked dir escaping outside", async () => {
     const pluginFolder = path.join(ws, ".voidrift", "plugins", "test-plugin");
+    const outside = path.join(ws, "outside");
     await fs.mkdir(pluginFolder, { recursive: true });
+    await fs.mkdir(outside, { recursive: true });
 
-    let recordCalled = false;
+    // Create symlink inside plugin folder pointing outside
+    await fs.symlink(outside, path.join(pluginFolder, "evil"));
 
-    const mockJournal = {
-      record: async () => {
-        recordCalled = true;
-      },
-    } as any;
+    const accessor = new PluginFilesAccessor({ pluginFolder });
 
-    const accessor = new PluginFilesAccessor({
-      pluginFolder,
-      journal: mockJournal,
-      getSessionId: () => "s1",
-      getTurn: () => 1,
-    });
+    // Attempt 1: write('evil/x.md') should fail and NOT write to outside
+    try {
+      await accessor.write("evil/x.md", "hi");
+      expect.fail("Should refuse write to symlink escape");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PluginFileAccessError);
+      expect((err as Error).message).toContain("symlink");
+    }
+    expect(existsSync(path.join(outside, "x.md"))).toBe(false);
 
-    await accessor.write("test.md", "test");
-    expect(recordCalled).toBe(true);
+    // Attempt 2: write('evil/sub/y.md') should also fail
+    try {
+      await accessor.write("evil/sub/y.md", "hi");
+      expect.fail("Should refuse write to nested symlink escape");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PluginFileAccessError);
+      expect((err as Error).message).toContain("symlink");
+    }
+    expect(existsSync(path.join(outside, "sub", "y.md"))).toBe(false);
+
+    // Attempt 3: read('evil/x.md') should fail
+    try {
+      await accessor.read("evil/x.md");
+      expect.fail("Should refuse read from symlink escape");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PluginFileAccessError);
+      expect((err as Error).message).toContain("symlink");
+    }
+
+    // Attempt 4: list('evil') should fail
+    try {
+      await accessor.list("evil");
+      expect.fail("Should refuse list on symlink escape");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PluginFileAccessError);
+      expect((err as Error).message).toContain("symlink");
+    }
+
+    // Attempt 5: remove('evil/x.md') should fail (even though file doesn't exist)
+    try {
+      await accessor.remove("evil/x.md");
+      expect.fail("Should refuse remove from symlink escape");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PluginFileAccessError);
+      expect((err as Error).message).toContain("symlink");
+    }
+
+    // Verify outside directory is still empty
+    const outsideFiles = await fs.readdir(outside);
+    expect(outsideFiles).toHaveLength(0);
   });
 
-  it("MUTATION PROOF: removing realpath check breaks symlink test", async () => {
-    // If checkSymlinkContainment is disabled, symlink escape succeeds
+  it("allows symlinked dir that stays INSIDE plugin folder", async () => {
     const pluginFolder = path.join(ws, ".voidrift", "plugins", "test-plugin");
+    const inside = path.join(pluginFolder, ".internal");
     await fs.mkdir(pluginFolder, { recursive: true });
+    await fs.mkdir(inside, { recursive: true });
 
-    const outside = path.join(ws, "outside.txt");
-    await fs.writeFile(outside, "escaped");
-    await fs.symlink(outside, path.join(pluginFolder, "link.txt"));
+    // Create symlink inside plugin folder pointing to another dir inside
+    await fs.symlink(inside, path.join(pluginFolder, "link-to-internal"));
+
+    const accessor = new PluginFilesAccessor({ pluginFolder });
+
+    // Write through the symlink should work
+    await accessor.write("link-to-internal/data.md", "allowed");
+    expect(existsSync(path.join(inside, "data.md"))).toBe(true);
+
+    // Read through the symlink should work
+    const content = await accessor.read("link-to-internal/data.md");
+    expect(content).toBeTruthy();
+  });
+
+  it("refuses sibling-prefix symlink (e.g., <root>-evil)", async () => {
+    const pluginFolder = path.join(ws, ".voidrift", "plugins", "test-plugin");
+    const sibling = path.join(ws, ".voidrift", "plugins", "test-plugin-evil");
+    await fs.mkdir(pluginFolder, { recursive: true });
+    await fs.mkdir(sibling, { recursive: true });
+
+    // Create symlink resolving to sibling prefix (not actual parent)
+    await fs.symlink(sibling, path.join(pluginFolder, "fake-sibling"));
 
     const accessor = new PluginFilesAccessor({ pluginFolder });
 
     try {
-      await accessor.read("link.txt");
-      expect.fail("MUTATION: symlink check is missing");
+      await accessor.write("fake-sibling/attack.md", "hi");
+      expect.fail("Should refuse sibling-prefix symlink escape");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PluginFileAccessError);
+      expect((err as Error).message).toContain("symlink");
+    }
+    expect(existsSync(path.join(sibling, "attack.md"))).toBe(false);
+  });
+
+  it("refuses dangling symlink pointing outside (write('d') where d -> nonexistent)", async () => {
+    const pluginFolder = path.join(ws, ".voidrift", "plugins", "test-plugin");
+    const nonexistent = path.join(ws, "outside", "nonexistent");
+    await fs.mkdir(pluginFolder, { recursive: true });
+
+    // Create dangling symlink (target doesn't exist, but path is outside root)
+    await fs.symlink(nonexistent, path.join(pluginFolder, "d"));
+
+    const accessor = new PluginFilesAccessor({ pluginFolder });
+
+    try {
+      await accessor.write("d", "hi");
+      expect.fail("Should refuse write on dangling symlink to outside");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PluginFileAccessError);
+      expect((err as Error).message).toContain("symlink");
+    }
+  });
+
+  it("allows normal nested writes (no symlinks)", async () => {
+    const pluginFolder = path.join(ws, ".voidrift", "plugins", "test-plugin");
+    await fs.mkdir(pluginFolder, { recursive: true });
+
+    const accessor = new PluginFilesAccessor({ pluginFolder });
+
+    // Normal write with nested structure
+    await accessor.write("data/docs/file.md", "content");
+    expect(existsSync(path.join(pluginFolder, "data", "docs", "file.md"))).toBe(true);
+
+    const content = await accessor.read("data/docs/file.md");
+    expect(content).toBeTruthy();
+
+    // Remove nested
+    await accessor.remove("data/docs/file.md");
+    expect(existsSync(path.join(pluginFolder, "data", "docs", "file.md"))).toBe(false);
+  });
+});
+
+describe("PluginFilesAccessor cross-plugin containment", () => {
+  let ws: string;
+
+  beforeEach(async () => {
+    ws = hermeticTmp("plugin-files-cross");
+  });
+
+  afterEach(async () => {
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it("one plugin cannot reach another's files via relative or absolute paths", async () => {
+    // Create two separate plugin folders
+    const plansFolder = path.join(ws, ".voidrift", "plugins", "plans");
+    const routinesFolder = path.join(ws, ".voidrift", "plugins", "routines");
+    await fs.mkdir(plansFolder, { recursive: true });
+    await fs.mkdir(routinesFolder, { recursive: true });
+
+    const plansAccessor = new PluginFilesAccessor({ pluginFolder: plansFolder });
+    const routinesAccessor = new PluginFilesAccessor({ pluginFolder: routinesFolder });
+
+    // Write a file in routines folder
+    await routinesAccessor.write("secret.md", "secret data");
+    expect(existsSync(path.join(routinesFolder, "secret.md"))).toBe(true);
+
+    // Plans plugin tries to read routines' file via relative path
+    try {
+      await plansAccessor.read("../routines/secret.md");
+      expect.fail("Should refuse relative path escaping to another plugin");
     } catch (err) {
       expect(err).toBeInstanceOf(PluginFileAccessError);
     }
+
+    // Plans plugin tries to read via absolute path
+    try {
+      await plansAccessor.read(path.join(routinesFolder, "secret.md"));
+      expect.fail("Should refuse absolute path");
+    } catch (err) {
+      expect(err).toBeInstanceOf(PluginFileAccessError);
+    }
+
+    // Verify routines file still exists and is untouched
+    const content = await routinesAccessor.read("secret.md");
+    expect(content).toBe("secret data");
   });
 });
