@@ -47,14 +47,14 @@ describe("LimitsCapability", () => {
     bus.subscribe("LIMIT_HIT", (e) => events.push(e.payload as { key: string; notice: string }));
     const resolved = resolveLimits([]);
     const limits = new LimitsCapability(resolved, bus, { session: "s1" });
-    // A mixed-case registry key (context.metaBlockMaxTokens) must appear in BOTH
+    // A mixed-case registry key (context.defaultOutputReservation) must appear in BOTH
     // the emitted payload and the notice exactly as registered — a headless run's
-    // `voidrift: limit reached: context.metaBlockMaxTokens (…)` must not be
+    // `voidrift: limit reached: context.defaultOutputReservation (…)` must not be
     // lower-cased.
-    const r = limits.hit("context.metaBlockMaxTokens");
-    expect(events[0]?.key).toBe("context.metaBlockMaxTokens");
-    expect(r.notice).toContain("limits.context.metaBlockMaxTokens");
-    expect(r.notice).not.toContain("metablockmaxtokens");
+    const r = limits.hit("context.defaultOutputReservation");
+    expect(events[0]?.key).toBe("context.defaultOutputReservation");
+    expect(r.notice).toContain("limits.context.defaultOutputReservation");
+    expect(r.notice).not.toContain("defaultoutputreservation");
   });
 
   it("notice uses the blueprint wording", () => {

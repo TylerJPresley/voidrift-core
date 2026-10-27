@@ -163,23 +163,7 @@ describe("session meta block — real path through createCore (§4.4)", () => {
     expect(model.systemText).toContain("date:");
   });
 
-  it("a tiny metaBlockMaxTokens drops cache/limits first and emits LIMIT_HIT, keeping PWD/concurrency", async () => {
-    const model = new CaptureModel();
-    const ready = await makeCore(model, ws, { limits: { context: { metaBlockMaxTokens: 120 } } });
-    cores.push(ready.api);
-    const hits: string[] = [];
-    ready.api.events.subscribe("LIMIT_HIT", (e) => hits.push((e.payload as { key: string }).key));
-    const created = await ready.api.session.create({});
-    await ready.api.session.send(created.ok ? created.value.id : "", { input: "hi" });
-    const t = model.systemText;
-    // kept-last fields survive the cut
-    expect(t).toContain("PWD");
-    expect(t).toContain("workers in parallel:");
-    expect(t).toContain("ingest parallel:");
-    // cache/limits detail dropped first
-    expect(t).not.toContain("max read lines:");
-    expect(hits).toContain("context.metaBlockMaxTokens");
-  });
+
 
   it("the head stays within contextHeadBudgetPct on a 32k window", async () => {
     const model = new CaptureModel();

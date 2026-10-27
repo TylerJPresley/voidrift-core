@@ -16,7 +16,6 @@
  */
 import { renderManifestLine, type DocumentManifestLine } from "../document-registry.js";
 import { estimateTokens } from "./budget.js";
-import { limitDefault } from "../limits.js";
 import {
   type ContextSnapshot,
   type DigestPointer,
@@ -50,35 +49,28 @@ export interface AssembledHead {
   tierSplit: HeadTierSplit;
   /** True when degradation ran because content exceeded the cap. */
   degraded: boolean;
-  /** The meta-block field groups dropped to fit `metaBlockMaxTokens` (§4.4), in
-   * drop order — empty when nothing dropped. The engine emits one `LIMIT_HIT`
-   * for `context.metaBlockMaxTokens` when this is non-empty. */
-  metaDropped: string[];
 }
 
 function join(parts: string[]): string {
   return parts.filter((p) => p.trim() !== "").join("\n\n");
 }
 
-/** Render the inline-always Agent content (§4.2.1 tier 1). Never dropped. The
- * session meta block (§4.4) is bounded by `metaBlockMaxTokens`; its dropped
- * field groups are returned so the caller can emit a LIMIT_HIT. */
+/** Render the inline-always Agent content (§4.2.1 tier 1). Never dropped. */
 function renderInlineAgent(
   snapshot: ContextSnapshot,
-  metaBlockMaxTokens: number,
-): { text: string; metaDropped: string[] } {
+): string {
   const parts: string[] = [];
   if (snapshot.systemPrompt) parts.push(snapshot.systemPrompt);
   if (snapshot.blockedTools.length > 0) {
     parts.push(`Blocked tools: ${snapshot.blockedTools.join(", ")}`);
   }
-  const meta = renderMetaBlock(snapshot.environment, metaBlockMaxTokens);
+  const meta = renderMetaBlock(snapshot.environment);
   parts.push(meta.text);
   for (const b of snapshot.agentProviderBlocks) parts.push(b);
   if (snapshot.hardRules) parts.push(snapshot.hardRules);
   if (snapshot.identityMemory) parts.push(`Identity:\n${snapshot.identityMemory}`);
   parts.push(`Status: ${snapshot.planStatus || "no active plan"}`);
-  return { text: join(parts), metaDropped: meta.dropped };
+  return join(parts);
 }
 
 /** Render a digest+pointer item (§4.2.1 tier 2). `shorten` degrades the digest. */
@@ -136,16 +128,12 @@ function manualLines(manuals: ManualManifestLine[]): string[] {
  * Assemble the head within `headCap` tokens (§4.2.1). Builds the Agent and Void
  * layers, measures them, and if over the cap degrades lower tiers first: shorten
  * digests, then truncate manifests — never the inline-always tier or hard rules.
- * `metaBlockMaxTokens` bounds the session meta block (§4.4); its dropped field
- * groups are returned as `metaDropped`.
  */
 export function assembleHead(
   snapshot: ContextSnapshot,
   headCap: number,
-  metaBlockMaxTokens: number = limitDefault("context.metaBlockMaxTokens"),
 ): AssembledHead {
-  const inline = renderInlineAgent(snapshot, metaBlockMaxTokens);
-  const inlineAgent = inline.text;
+  const inlineAgent = renderInlineAgent(snapshot);
   const inlineTokens = estimateTokens(inlineAgent);
 
   const build = (shortenDigests: boolean, manifestLimit: number | null): {
@@ -213,7 +201,6 @@ export function assembleHead(
       manifest: attempt.manifestTokens,
     },
     degraded,
-    metaDropped: inline.metaDropped,
   };
 }
 

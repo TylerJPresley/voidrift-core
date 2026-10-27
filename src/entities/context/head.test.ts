@@ -61,18 +61,9 @@ describe("session meta block in the head (§4.4)", () => {
     expect(agent.text.toLowerCase()).toContain("session data");
     expect(agent.text).toContain("PWD / workspace root: /ws");
     expect(agent.text).toContain("workers in parallel: 4");
-    expect(head.metaDropped).toEqual([]);
   });
 
-  it("drops meta fields and reports metaDropped under a tiny metaBlockMaxTokens", () => {
-    const head = assembleHead(full(), 1600, 55);
-    expect(head.metaDropped.length).toBeGreaterThan(0);
-    expect(head.metaDropped[0]).toBe("cache dir");
-    const agent = head.blocks.find((b) => b.layer === "agent")!;
-    // kept-last fields survive
-    expect(agent.text).toContain("PWD / workspace root: /ws");
-    expect(agent.text).toContain("workers in parallel:");
-  });
+
 });
 
 describe("head assembly (§4.2.1, §4.3)", () => {

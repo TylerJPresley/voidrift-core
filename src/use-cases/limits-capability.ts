@@ -60,7 +60,7 @@ export class LimitsCapability implements LimitsPort {
     // Always report the key exactly as it is REGISTERED (`spec.key`), never the
     // caller-supplied spelling, so the notice, the per-turn dedup and the
     // emitted LIMIT_HIT payload all carry the canonical case — a headless run's
-    // stderr line names `context.metaBlockMaxTokens`, not a lower-cased variant.
+    // stderr line names `context.defaultOutputReservation`, not a lower-cased variant.
     const canonicalKey = spec.key;
     const what = ctx?.what ?? `${spec.area} ${canonicalKey.slice(spec.area.length + 1)} limit reached`;
     const notice = limitNotice(what, canonicalKey, value);

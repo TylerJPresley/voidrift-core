@@ -1463,7 +1463,6 @@ export class Engine {
       buildSnapshot: () => this.buildSnapshot(session),
       getToolSchemaText: () => this.toolSchemaText(),
       ...(this.deps.limits ? { getSummaryFloor: () => this.deps.limits!.get("context.summaryBudgetFloor") } : {}),
-      ...(this.deps.limits ? { getMetaBlockMaxTokens: () => this.deps.limits!.get("context.metaBlockMaxTokens") } : {}),
       summarize: async (prompt: string) => {
         // §4.10 / invariant 9 — the summarizer is a model call too, so it passes
         // the SAME overflow guard. If the fold prompt itself would overflow the
@@ -1501,14 +1500,6 @@ export class Engine {
       wrapModelCall: async (request, handler) => {
         const snapshot = this.buildSnapshot(session);
         const { message, head } = pipeline.buildSystemMessage(snapshot);
-        // §4.4 — one LIMIT_HIT when the session meta block dropped any field to
-        // fit `context.metaBlockMaxTokens` (deduped per turn by the port).
-        if (head.metaDropped.length > 0) {
-          this.deps.limits?.hit("context.metaBlockMaxTokens", undefined, {
-            session: session.id,
-            what: `session meta block trimmed (dropped: ${head.metaDropped.join(", ")})`,
-          });
-        }
         const derived = pipeline.deriveView(request.messages as BaseMessage[]);
         // §3.3 / §4 — keep images only on the CURRENT turn's message (the last
         // one); older messages' image blocks become a text placeholder so a past

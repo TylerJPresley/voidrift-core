@@ -6,7 +6,7 @@ type: reference
 
 # Configuration Limits
 
-VoidRift has **100** configurable limits across **24** areas. Each is a
+VoidRift has **99** configurable limits across **24** areas. Each is a
 key under `limits.<area>.<name>`; a `tunable` limit follows the normal cascade (the
 narrower layer wins), a `safety` limit may only be *lowered* by a project/session layer,
 and an `integrity` limit may only be *raised* by a project/session layer (it protects an
@@ -22,7 +22,6 @@ audit/restore guarantee, so lowering it from an untrusted project config is igno
 | `context.defaultOutputReservation` | count | tunable | Default output-token reservation when a model sets none. |
 | `context.summaryBudgetFloor` | count | tunable | Minimum token budget for a compaction summary. |
 | `context.excerptLineMaxChars` | chars | tunable | Per-line cap in an evicted-tool-result excerpt. |
-| `context.metaBlockMaxTokens` | count | tunable | Max tokens of the context-head meta block. |
 
 ## `limits.turn`
 

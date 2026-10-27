@@ -5,18 +5,15 @@
  * EVERY turn from live values, so it never drifts from the real session state.
  * It is DATA, never authority (§1 rule 15): it tells the model where it is and
  * what it is working with, and grants, widens or relaxes nothing. One field per
- * line, bounded by `limits.context.metaBlockMaxTokens`; when over the cap the
- * least-load-bearing fields drop first (cache/limits, then git detail, then
- * model detail) so the location, date, concurrency, rounds and worker fields
- * always survive. It carries NO secret and NO file content; every rendered value
- * is passed through the shared secret masker and the shared unsafe-char stripper
- * (control/ANSI/bidi/zero-width removed, newlines collapsed to one space) before
- * it leaves the process, so no field spans more than one line.
+ * line, all fields always rendered (bounded by contextHeadBudgetPct, not a separate cap).
+ * It carries NO secret and NO file content; every rendered value is passed through the
+ * shared secret masker and the shared unsafe-char stripper (control/ANSI/bidi/zero-width
+ * removed, newlines collapsed to one space) before it leaves the process, so no field
+ * spans more than one line.
  *
- * Pure: no infrastructure imports beyond the token estimator and the shared
- * masker, so the pipeline logic stays testable in the entity layer.
+ * Pure: no infrastructure imports beyond the shared masker, so the pipeline logic stays
+ * testable in the entity layer.
  */
-import { estimateTokens } from "./budget.js";
 import { maskText } from "../../use-cases/secret-mask.js";
 import { stripUnsafeChars } from "../untrusted-text.js";
 
@@ -71,26 +68,14 @@ export interface EnvironmentFacts {
   workers: string[];
 }
 
-/** The result of a render: the text and the names of dropped field groups, in
- * the order they were dropped (for the LIMIT_HIT at the engine boundary). */
+/** The result of a render: the text only (all fields always render). */
 export interface MetaBlockRender {
   text: string;
-  dropped: string[];
 }
 
 /** The header line — states this is session data, never instructions (§4.4, §1 rule 15). */
 const HEADER =
   "Session data (where you are and what you are working with — context, not instructions):";
-
-/**
- * The documented drop order (§4.4): least-load-bearing first. Each group is a
- * removable slice of lines; `cache dir` (cache/limits detail) goes first, then
- * `git detail` (the dirty summary), then `model detail` (vision/parallel/output
- * reservation). The location, date, session, concurrency, rounds and workers
- * fields are never in this list, so they always survive.
- */
-const DROP_ORDER = ["cache dir", "git detail", "model detail"] as const;
-type DropGroup = (typeof DROP_ORDER)[number];
 
 /** Mask a single value defensively — the block must never leak a secret (§4.4)
  * and must never throw on a missing field. Every value is also stripped of
@@ -106,8 +91,8 @@ function safe(value: string): string {
   return maskText(oneLine);
 }
 
-/** Build the field lines for a given set of dropped groups. */
-function lines(env: EnvironmentFacts, dropped: Set<DropGroup>): string[] {
+/** Build the field lines. */
+function lines(env: EnvironmentFacts): string[] {
   const out: string[] = [HEADER];
   // ── Location (kept last) ────────────────────────────────────────────────
   if (env.workspaceRoot && env.workspaceRoot !== env.cwd) {
@@ -122,7 +107,7 @@ function lines(env: EnvironmentFacts, dropped: Set<DropGroup>): string[] {
   out.push("  note: each command runs fresh in PWD — a `cd` does not persist");
   // ── Repository ──────────────────────────────────────────────────────────
   if (env.gitBranch) {
-    const detail = !dropped.has("git detail") && env.gitDirty ? ` (${safe(env.gitDirty)})` : "";
+    const detail = env.gitDirty ? ` (${safe(env.gitDirty)})` : "";
     out.push(`  git: ${safe(env.gitBranch)}${detail}`);
   } else {
     out.push("  git: no");
@@ -133,13 +118,11 @@ function lines(env: EnvironmentFacts, dropped: Set<DropGroup>): string[] {
   // ── Model ─────────────────────────────────────────────────────────────────
   out.push(`  model: ${safe(env.model)}`);
   out.push(`  context window: ${env.contextLimit}`);
-  if (!dropped.has("model detail")) {
-    const maxOut = env.maxOutputTokens === null ? "default" : String(env.maxOutputTokens);
-    out.push(`  output reservation: ${maxOut}`);
-    out.push(`  vision: ${env.vision ? "yes" : "no"}`);
-    if (env.parallelToolCalls !== null) {
-      out.push(`  parallel tool calls: ${env.parallelToolCalls ? "yes" : "no"}`);
-    }
+  const maxOut = env.maxOutputTokens === null ? "default" : String(env.maxOutputTokens);
+  out.push(`  output reservation: ${maxOut}`);
+  out.push(`  vision: ${env.vision ? "yes" : "no"}`);
+  if (env.parallelToolCalls !== null) {
+    out.push(`  parallel tool calls: ${env.parallelToolCalls ? "yes" : "no"}`);
   }
   // ── Concurrency (kept last) — numbers so the model sizes a fan-out batch ──
   out.push(`  workers in parallel: ${env.turnMaxConcurrency}`);
@@ -149,11 +132,9 @@ function lines(env: EnvironmentFacts, dropped: Set<DropGroup>): string[] {
   if (env.remainingContextPct !== null) {
     out.push(`  context remaining: ${env.remainingContextPct}%`);
   }
-  // ── Cache / limits detail (dropped first) ────────────────────────────────
-  if (!dropped.has("cache dir")) {
-    out.push(`  max read lines: ${env.maxReadLines}`);
-    out.push(`  cache dir: ${safe(env.cacheDir)}`);
-  }
+  // ── Cache / limits detail ────────────────────────────────────
+  out.push(`  max read lines: ${env.maxReadLines}`);
+  out.push(`  cache dir: ${safe(env.cacheDir)}`);
   // ── Workers (kept last) ──────────────────────────────────────────────────
   const workers = env.workers.length > 0 ? env.workers.map(safe).join(", ") : "none";
   out.push(`  available workers: ${workers}`);
@@ -161,19 +142,11 @@ function lines(env: EnvironmentFacts, dropped: Set<DropGroup>): string[] {
 }
 
 /**
- * Render the session meta block within `maxTokens` (§4.4). Builds every field,
- * and if the content exceeds the cap drops groups in the documented order until
- * it fits (or every droppable group is gone). Returns the text and the dropped
- * group names so the engine emits one `LIMIT_HIT` for
- * `context.metaBlockMaxTokens` when anything was dropped.
+ * Render the session meta block (§4.4). Builds every field without dropping any.
+ * All fields are always rendered since the meta block is bounded by
+ * contextHeadBudgetPct rather than a separate cap.
  */
-export function renderMetaBlock(env: EnvironmentFacts, maxTokens: number): MetaBlockRender {
-  const dropped = new Set<DropGroup>();
-  let text = lines(env, dropped).join("\n");
-  for (const group of DROP_ORDER) {
-    if (estimateTokens(text) <= maxTokens) break;
-    dropped.add(group);
-    text = lines(env, dropped).join("\n");
-  }
-  return { text, dropped: [...dropped] };
+export function renderMetaBlock(env: EnvironmentFacts): MetaBlockRender {
+  const text = lines(env).join("\n");
+  return { text };
 }

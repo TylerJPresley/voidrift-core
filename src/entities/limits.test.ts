@@ -42,9 +42,6 @@ describe("limits registry (§13.11)", () => {
   });
 
   it("registers the new series rows with their specified bounds and classes", () => {
-    const meta = getLimitSpec("context.metaBlockMaxTokens");
-    expect(meta).toMatchObject({ default: 300, unit: "count", class: "tunable", min: 80, max: 2000 });
-
     const parallel = getLimitSpec("ingest.maxParallel");
     expect(parallel).toMatchObject({ unit: "count", class: "tunable", min: 1, max: 64 });
 
@@ -120,25 +117,19 @@ describe("limits config schema (§13.11)", () => {
   it("accepts the new series leaves within bounds", () => {
     const parsed = ConfigSchema.parse({
       limits: {
-        context: { metaBlockMaxTokens: 200 },
+        context: {},
         ingest: { maxParallel: 4 },
         tools: { searchFallbackMax: 500 },
         approval: { autoDenySeconds: 30 },
       },
     });
     const limitsObj = parsed.limits && typeof parsed.limits === 'object' ? (parsed.limits as Record<string, unknown>) : {};
-    const context = limitsObj.context as Record<string, number> | undefined;
     const ingest = limitsObj.ingest as Record<string, number> | undefined;
     const tools = limitsObj.tools as Record<string, number> | undefined;
     const approval = limitsObj.approval as Record<string, number> | undefined;
-    expect(context?.metaBlockMaxTokens).toBe(200);
     expect(ingest?.maxParallel).toBe(4);
     expect(tools?.searchFallbackMax).toBe(500);
     expect(approval?.autoDenySeconds).toBe(30);
-  });
-
-  it("rejects context.metaBlockMaxTokens below its min (80)", () => {
-    expect(ConfigSchema.safeParse({ limits: { context: { metaBlockMaxTokens: 10 } } }).success).toBe(false);
   });
 
   it("rejects ingest.maxParallel above its max (64)", () => {

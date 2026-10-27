@@ -94,7 +94,6 @@ export const LIMITS: readonly LimitSpec[] = [
   { key: "context.defaultOutputReservation", area: "context", default: 1024, unit: "count", class: "tunable", min: 1, max: 1_000_000, doc: "Default output-token reservation when a model sets none.", inv: "CTX7" },
   { key: "context.summaryBudgetFloor", area: "context", default: 2000, unit: "count", class: "tunable", min: 0, max: 1_000_000, doc: "Minimum token budget for a compaction summary.", inv: "CTX8" },
   { key: "context.excerptLineMaxChars", area: "context", default: 2000, unit: "chars", class: "tunable", min: 1, max: 1_000_000, doc: "Per-line cap in an evicted-tool-result excerpt.", inv: "CTX12" },
-  { key: "context.metaBlockMaxTokens", area: "context", default: 300, unit: "count", class: "tunable", min: 80, max: 2000, doc: "Max tokens of the context-head meta block.", inv: "CTX9" },
 
   // --- turn (A) ---
   { key: "turn.shutdownGraceMs", area: "turn", default: 5000, unit: "ms", class: "tunable", min: 0, max: 600_000, doc: "Grace period before a hard turn shutdown.", inv: "CTX20", alias: "turnShutdownGraceMs" },

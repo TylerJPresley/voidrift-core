@@ -18,7 +18,6 @@ import type { EventBus } from "../entities/event-bus.js";
 import type { Session } from "../entities/session.js";
 import { DocumentRegistry } from "../entities/document-registry.js";
 import { assembleHead, appendTurnMetadata, type ContentBlock } from "../entities/context/head.js";
-import { limitDefault } from "../entities/limits.js";
 import type { ContextSnapshot } from "../entities/context/snapshot.js";
 import {
   computeBudget,
@@ -87,9 +86,6 @@ export interface ContextPipelineDeps {
   /** §13.11 `context.summaryBudgetFloor` — the live minimum summary token budget;
    * absent uses the registry default (byte-identical to the former constant). */
   getSummaryFloor?: () => number;
-  /** §4.4/§13.11 `context.metaBlockMaxTokens` — the live session-meta-block cap;
-   * absent uses the registry default. */
-  getMetaBlockMaxTokens?: () => number;
 }
 
 /**
@@ -146,8 +142,7 @@ export class ContextPipeline {
   buildSystemMessage(snapshot: ContextSnapshot): { message: SystemMessage; blocks: ContentBlock[]; head: ReturnType<typeof assembleHead> } {
     const window = this.deps.getWindow();
     const cap = headCapTokens(window, this.percents().headBudgetPct);
-    const metaCap = this.deps.getMetaBlockMaxTokens?.() ?? limitDefault("context.metaBlockMaxTokens");
-    const head = assembleHead(snapshot, cap, metaCap);
+    const head = assembleHead(snapshot, cap);
     const blocks = appendTurnMetadata(head, snapshot);
     const content = blocks.map((b) => ({ type: "text" as const, text: b.text }));
     const message = new SystemMessage({ content });
