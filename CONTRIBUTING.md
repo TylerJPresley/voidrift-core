@@ -14,6 +14,10 @@
 - ESM modules
 - Conventional commits: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`, `chore:`
 
+## Dependencies
+
+Every package installs cleanly. No shipped dependency may need a compiler toolchain, a binary download, or an install script: an install with `ignore-scripts=true` and no C++ toolchain must still produce a working package. The gate enforces this (`check:clean-install`); dev-only dependencies are exempt. Before adding a dependency, check its license (Apache-2.0 or more permissive) and its install scripts.
+
 ## Licensing
 
 Inbound contributions must be Apache-2.0 licensed; outbound is Apache-2.0.
