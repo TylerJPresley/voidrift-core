@@ -18,7 +18,7 @@
 import { hermeticTmp } from "../test-hermetic.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { StateGraph, START, END } from "@langchain/langgraph";
-import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
+import { NodeSqliteSaver } from "../adapters/node-sqlite-saver.js";
 import { z } from "zod";
 import path from "node:path";
 import fs from "node:fs/promises";
@@ -31,7 +31,7 @@ const State = z.object({ n: z.number().default(0) });
 
 /** Run a single-node graph that always aborts; return the persisted checkpoints. */
 async function runAbort(dbPath: string, durability: Durability) {
-  const saver = SqliteSaver.fromConnString(dbPath);
+  const saver = NodeSqliteSaver.fromPath(dbPath);
   const graph = new StateGraph(State)
     .addNode("only", (): { n: number } => {
       throw new Error("aborted-mid-node");
@@ -48,7 +48,7 @@ async function runAbort(dbPath: string, durability: Durability) {
     checkpoints.push(tuple);
   }
   const snapshot = await graph.getState({ configurable: { thread_id: "t" } });
-  saver.db.close();
+  saver.close();
   return { checkpoints, snapshot };
 }
 

@@ -2,7 +2,7 @@ import { hermeticTmp } from "./test-hermetic.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { fakeModel } from "@langchain/core/testing";
 import { AIMessage } from "@langchain/core/messages";
-import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
+import { NodeSqliteSaver } from "./adapters/node-sqlite-saver.js";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { createCore } from "./boot.js";
@@ -115,7 +115,7 @@ describe("CoreAPI facade — additional branches (§2, §5)", () => {
 
   it("constructs with a SQLite checkpointer injected", async () => {
     const dbPath = path.join(ws, ".voidrift", "cp.db");
-    const saver = SqliteSaver.fromConnString(dbPath);
+    const saver = NodeSqliteSaver.fromPath(dbPath);
     const { api } = track(
       await createCore({
         workspaceRoot: ws,
@@ -129,7 +129,7 @@ describe("CoreAPI facade — additional branches (§2, §5)", () => {
     const id = created.ok ? created.value.id : "";
     const res = await api.session.send(id, { input: "hi" });
     expect(res.ok).toBe(true);
-    saver.db.close();
+    saver.close();
   });
 
   it("auto-names a session after the first turn and a rename pins it", async () => {

@@ -15,7 +15,7 @@ import { hermeticTmp } from "./test-hermetic.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { fakeModel } from "@langchain/core/testing";
 import { AIMessage } from "@langchain/core/messages";
-import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
+import { NodeSqliteSaver } from "./adapters/node-sqlite-saver.js";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { createCore } from "./boot.js";
@@ -68,7 +68,7 @@ describe("§2 — CoreAPI facade, multi-session isolation, out_of_band confirm, 
         .respondWithTools([{ name: "read_file", args: { path: "a.txt" } }])
         .respond(new AIMessage("A done"));
 
-    const saverA = SqliteSaver.fromConnString(dbPath);
+    const saverA = NodeSqliteSaver.fromPath(dbPath);
     const { api: apiA } = track(
       await createCore({
         workspaceRoot: ws,
@@ -133,7 +133,7 @@ describe("§2 — CoreAPI facade, multi-session isolation, out_of_band confirm, 
     // The write landed in the workspace (no cross-talk into A's state).
     expect(await fs.readFile(path.join(ws, "b.txt"), "utf8")).toBe("from B");
 
-    saverA.db.close();
+    saverA.close();
 
     // Simulate a document going stale for A, mirrored to the durable store.
     const persistedA = await sessions.load(idA);
@@ -143,7 +143,7 @@ describe("§2 — CoreAPI facade, multi-session isolation, out_of_band confirm, 
 
     // And when session A is resumed by id in a FRESH CoreAPI (fresh process) over
     // the same mirror and the same on-disk checkpoint db.
-    const saverFresh = SqliteSaver.fromConnString(dbPath);
+    const saverFresh = NodeSqliteSaver.fromPath(dbPath);
     const { api: apiFresh } = track(
       await createCore({
         workspaceRoot: ws,
@@ -174,6 +174,6 @@ describe("§2 — CoreAPI facade, multi-session isolation, out_of_band confirm, 
     expect(ids).toContain(idA);
     expect(ids).toContain(idB);
 
-    saverFresh.db.close();
+    saverFresh.close();
   });
 });

@@ -5,7 +5,7 @@
   "license": "Apache-2.0",
   "type": "module",
   "engines": {
-    "node": ">=24"
+    "node": ">=24.15"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -37,13 +37,11 @@
     "@langchain/langgraph": "1.4.21",
     "@langchain/langgraph-checkpoint": "1.1.6",
     "@langchain/langgraph-checkpoint-postgres": "1.0.6",
-    "@langchain/langgraph-checkpoint-sqlite": "1.0.4",
     "@langchain/langgraph-sdk": "1.12.3",
     "@langchain/openai": "1.6.2",
     "@modelcontextprotocol/sdk": "1.32.1",
     "@mozilla/readability": "0.6.0",
     "@napi-rs/keyring": "2.1.0",
-    "better-sqlite3": "12.11.1",
     "chokidar": "5.0.0",
     "deepagents": "1.14.2",
     "langchain": "1.5.16",
@@ -58,7 +56,6 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "9.6.0",
     "@types/mdast": "^4.0.4",
     "@types/node": "24.19.2",
     "@vitest/coverage-v8": "5.0.3",

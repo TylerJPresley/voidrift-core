@@ -16,14 +16,14 @@
 import { hermeticTmp } from "../test-hermetic.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { StateGraph, START, END, interrupt, Command } from "@langchain/langgraph";
-import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
+import { NodeSqliteSaver } from "../adapters/node-sqlite-saver.js";
 import { z } from "zod";
 import path from "node:path";
 import fs from "node:fs/promises";
 
 const State = z.object({ value: z.string().default("") });
 
-function buildGraph(saver: SqliteSaver) {
+function buildGraph(saver: NodeSqliteSaver) {
   return new StateGraph(State)
     .addNode("ask", () => {
       const answer = interrupt("need-approval");
@@ -51,7 +51,7 @@ describe("substrate §1.5 — interrupt/resume survives across processes via the
     const config = { configurable: { thread_id: "t1" } };
 
     // Given a run in "process A" that interrupts and persists to the db file.
-    const saverA = SqliteSaver.fromConnString(dbPath);
+    const saverA = NodeSqliteSaver.fromPath(dbPath);
     const graphA = buildGraph(saverA);
     const first = await graphA.invoke({ value: "" }, config);
 
@@ -62,17 +62,17 @@ describe("substrate §1.5 — interrupt/resume survives across processes via the
     expect((first as { value?: string }).value).toBe("");
 
     // Simulate the process boundary: close A's db handle entirely.
-    saverA.db.close();
+    saverA.close();
 
     // When "process B" — a fresh saver + fresh graph over the SAME db file —
     //   resumes with Command({ resume }).
-    const saverB = SqliteSaver.fromConnString(dbPath);
+    const saverB = NodeSqliteSaver.fromPath(dbPath);
     const graphB = buildGraph(saverB);
     const resumed = await graphB.invoke(new Command({ resume: "APPROVED" }), config);
 
     // Then the paused run resumes to completion using the on-disk checkpoint.
     expect((resumed as { value?: string }).value).toBe("resumed-with:APPROVED");
 
-    saverB.db.close();
+    saverB.close();
   });
 });

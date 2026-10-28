@@ -17,7 +17,7 @@ import { hermeticTmp } from "./test-hermetic.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { fakeModel } from "@langchain/core/testing";
 import { AIMessage } from "@langchain/core/messages";
-import { SqliteSaver } from "@langchain/langgraph-checkpoint-sqlite";
+import { NodeSqliteSaver } from "./adapters/node-sqlite-saver.js";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { createCore } from "./boot.js";
@@ -68,7 +68,7 @@ describe("§9 — Guardian and Warden: one decision point", () => {
 
   it("a gated write with no rule asks, pauses out_of_band with the full action, and resolves on confirm; reads are free", async () => {
     const sessions = new InMemorySessionRepository();
-    const saver = SqliteSaver.fromConnString(dbPath);
+    const saver = NodeSqliteSaver.fromPath(dbPath);
     const script = () =>
       fakeModel()
         .respondWithTools([{ name: "read_file", args: { path: "read-me.txt" } }]) // free read
@@ -99,12 +99,12 @@ describe("§9 — Guardian and Warden: one decision point", () => {
     expect(done.ok).toBe(true);
     if (done.ok) expect(done.value.status).toBe("completed");
     expect(await fs.readFile(path.join(ws, "out.txt"), "utf8")).toBe("x");
-    saver.db.close();
+    saver.close();
   });
 
   it("a persisted rule auto-approves a later identical call", async () => {
     const sessions = new InMemorySessionRepository();
-    const saver = SqliteSaver.fromConnString(dbPath);
+    const saver = NodeSqliteSaver.fromPath(dbPath);
     // A config permissions rule allowing write_file to out.txt (persisted trust).
     const store = new InMemoryConfigStore({
       ...seed,
@@ -136,12 +136,12 @@ describe("§9 — Guardian and Warden: one decision point", () => {
       expect(res.value.text).toBe("auto done");
     }
     expect(await fs.readFile(path.join(ws, "out.txt"), "utf8")).toBe("y");
-    saver.db.close();
+    saver.close();
   });
 
   it("git push --force is force-asked even under a broad `git *` allow", async () => {
     const sessions = new InMemorySessionRepository();
-    const saver = SqliteSaver.fromConnString(dbPath);
+    const saver = NodeSqliteSaver.fromPath(dbPath);
     const store = new InMemoryConfigStore({
       ...seed,
       permissions: {
@@ -171,12 +171,12 @@ describe("§9 — Guardian and Warden: one decision point", () => {
       expect(res.value.pending?.[0]?.tool).toBe("execute_command");
       expect(res.value.pending?.[0]?.args).toMatchObject({ command: "git push --force origin main" });
     }
-    saver.db.close();
+    saver.close();
   });
 
   it("an edit to an unread file is blocked by the guardrail even after approval", async () => {
     const sessions = new InMemorySessionRepository();
-    const saver = SqliteSaver.fromConnString(dbPath);
+    const saver = NodeSqliteSaver.fromPath(dbPath);
     await fs.writeFile(path.join(ws, "unread.txt"), "original content here");
     // Allow edit_file by rule so the only thing standing is the guardrail.
     const store = new InMemoryConfigStore({
@@ -211,7 +211,7 @@ describe("§9 — Guardian and Warden: one decision point", () => {
     }
     expect(await fs.readFile(path.join(ws, "unread.txt"), "utf8")).toBe("original content here");
     void denied;
-    saver.db.close();
+    saver.close();
   });
 
   it("the Warden shim allows when no policy is configured", async () => {
@@ -274,7 +274,7 @@ describe("§9 — Guardian and Warden: one decision point", () => {
 
   it("a dangerous command substitution force-asks even under a broad `execute *` allow", async () => {
     const sessions = new InMemorySessionRepository();
-    const saver = SqliteSaver.fromConnString(dbPath);
+    const saver = NodeSqliteSaver.fromPath(dbPath);
     const store = new InMemoryConfigStore({
       ...seed,
       permissions: {
@@ -305,12 +305,12 @@ describe("§9 — Guardian and Warden: one decision point", () => {
       expect(res.value.status).toBe("waiting_for_approval");
       expect(res.value.pending?.[0]?.tool).toBe("execute_command");
     }
-    saver.db.close();
+    saver.close();
   });
 
   it("a whitespace-evaded dangerous substitution force-asks even under a broad `execute *` allow", async () => {
     const sessions = new InMemorySessionRepository();
-    const saver = SqliteSaver.fromConnString(dbPath);
+    const saver = NodeSqliteSaver.fromPath(dbPath);
     const store = new InMemoryConfigStore({
       ...seed,
       permissions: {
@@ -340,13 +340,13 @@ describe("§9 — Guardian and Warden: one decision point", () => {
       expect(res.value.status).toBe("waiting_for_approval");
       expect(res.value.pending?.[0]?.tool).toBe("execute_command");
     }
-    saver.db.close();
+    saver.close();
   });
 
   it("the secret-mask seam is invoked on the ask path (§10.10)", async () => {
     const spy = vi.spyOn(secretMask, "maskSecrets");
     const sessions = new InMemorySessionRepository();
-    const saver = SqliteSaver.fromConnString(dbPath);
+    const saver = NodeSqliteSaver.fromPath(dbPath);
     const script = () =>
       fakeModel()
         .respondWithTools([{ name: "execute_command", args: { command: "git push --force origin main" } }])
@@ -369,12 +369,12 @@ describe("§9 — Guardian and Warden: one decision point", () => {
       expect.objectContaining({ command: "git push --force origin main" }),
     );
     spy.mockRestore();
-    saver.db.close();
+    saver.close();
   });
 
   it("masks a secret in inferredPatterns on the normal ask path (§10.10)", async () => {
     const sessions = new InMemorySessionRepository();
-    const saver = SqliteSaver.fromConnString(dbPath);
+    const saver = NodeSqliteSaver.fromPath(dbPath);
     const secret = "sk-ABC" + "DEF0123456789ABCDEF0123456789";
     const script = () =>
       fakeModel()
@@ -399,6 +399,6 @@ describe("§9 — Guardian and Warden: one decision point", () => {
 
     expect(patternSets.length).toBeGreaterThan(0);
     for (const set of patternSets) for (const p of set) expect(p).not.toContain(secret);
-    saver.db.close();
+    saver.close();
   });
 });

@@ -5,8 +5,7 @@ VoidRift core SDK — the headless, model- and environment-agnostic agentic engi
 Part of VoidRift, a local-first, model-agnostic AI agent harness. Status: pre-release (0.1.0), under active development.
 
 ## Requirements
-- Node.js >=24
-- A native build of `better-sqlite3`. If install scripts are disabled, run `npm rebuild better-sqlite3` once after installing.
+- Node.js >=24.15
 
 ## Build from source
 ```bash
