@@ -22,7 +22,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.build.json",
     "manifest:update": "node scripts/update-shipped-hashes.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest --run",
@@ -50,8 +50,9 @@
     "liqe": "3.8.7",
     "mdast-util-heading-range": "4.0.0",
     "mdast-util-toc": "7.1.0",
-    "remark": "15.0.1",
+    "remark-parse": "11.0.0",
     "undici": "8.11.2",
+    "unified": "11.0.5",
     "yaml": "2.9.1",
     "zod": "4.6.5"
   },
