@@ -548,10 +548,13 @@ export class Plugins {
     }
 
     const contributions = emptyContributions();
-    const scoped = this.makeScoped(resolved.meta.id, contributions, resolved.realPath);
+    const pending: Promise<void>[] = [];
+    const scoped = this.makeScoped(resolved.meta.id, contributions, resolved.realPath, pending);
     try {
       const register = await this.deps.loader.importRegister(resolved);
       await register(scoped, options);
+      // §12.4 — await any pending async registrations (docs, agents) before marking load complete
+      await Promise.all(pending);
       this.loaded.set(resolved.meta.id, { meta: resolved.meta, realPath: resolved.realPath, contributions, source, hasOptions: Object.keys(options).length > 0 });
       // §12.4.1 — a project-layer plugin is in-process code enabled by a
       // `.voidrift/config.json`; record its load (id + layer) at info level so it
@@ -623,7 +626,7 @@ export class Plugins {
   }
 
   /** Build the scoped CoreAPI for a plugin (§12.4): tagged + namespaced. */
-  private makeScoped(pluginId: string, c: Contributions, realPath: string): ScopedCoreApi {
+  private makeScoped(pluginId: string, c: Contributions, realPath: string, pending: Promise<void>[]): ScopedCoreApi {
     const s = this.deps.services;
     const wrapHandler = <A extends unknown[]>(fn: (...a: A) => unknown): ((...a: A) => unknown) => {
       // A throwing plugin handler is contained (§12.4).
@@ -701,25 +704,27 @@ export class Plugins {
           // §12.8 — register all *.md files from a directory as plugin-contributed docs.
           // Source is forced to the plugin id (the caller cannot choose it).
           // Errors are caught and logged; docs are tracked in manuals.pluginDocs for teardown.
-          void (async () => {
+          const promise = (async () => {
             try {
               await s.registerPluginDocs(pluginId, dir, realPath);
             } catch (e) {
               this.logError(`plugin "${pluginId}" docs registration failed: ${String(e)}`);
             }
           })();
+          pending.push(promise);
         },
         agents: (dir: string) => {
           // §12.4, §13.9.1 — register agent templates from a directory.
           // Source (plugin id) is forced; path confinement mirrors docs.
           // Errors are caught and logged; templates are tracked for teardown.
-          void (async () => {
+          const promise = (async () => {
             try {
               await s.registerPluginAgents(pluginId, dir, realPath);
             } catch (e) {
               this.logError(`plugin "${pluginId}" agents registration failed: ${String(e)}`);
             }
           })();
+          pending.push(promise);
         },
       },
       expectations: {

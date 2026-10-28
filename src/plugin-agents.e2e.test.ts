@@ -303,15 +303,18 @@ describe("Plugin agents e2e (§12.4, §13.9.1)", () => {
     // Capture file bytes after first init
     const bytesAfterFirst = await fs.readFile(goodJsonPath);
 
-    // Second init should report collision
+    // Second init should report identical content as no-op
     const secondInit = await api.config.init({ scope: "project", dir: ws });
     expect(secondInit.ok).toBe(true);
     if (secondInit.ok) {
-      // Good should be in kept due to collision
-      expect(secondInit.value.kept).toBeDefined();
-      const keptGood = secondInit.value.kept!.find((k) => k.name === "planner");
-      expect(keptGood).toBeDefined();
-      expect(keptGood?.reason).toContain("already exists");
+      // Good should NOT be in kept or seeded (identical content is a no-op per §13.9.1)
+      // kept and seeded may be empty arrays or undefined
+      if (secondInit.value.kept) {
+        expect(secondInit.value.kept).toHaveLength(0);
+      }
+      if (secondInit.value.seeded) {
+        expect(secondInit.value.seeded).toHaveLength(0);
+      }
     }
 
     // Verify file bytes are unchanged

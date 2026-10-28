@@ -77,7 +77,7 @@ import { NodeRegistryPersistence, isRegistryFile } from "./entities/registry/reg
 import { validatePanelDeclaration } from "./entities/registry/panel-schema.js";
 import { validateDatasetDeclaration } from "./entities/registry/dataset-schema.js";
 import { registerBuiltinDatasets } from "./use-cases/builtin-datasets.js";
-import { CoreErrorException, coreError, ErrorCode } from "./entities/errors.js";
+import { CoreErrorException, coreError, ErrorCode, err, ok } from "./entities/errors.js";
 import { ObsWriter } from "./use-cases/obs-writer.js";
 import { toolDisplayName } from "./entities/observability/tool-display.js";
 import { NdjsonLogStore } from "./adapters/ndjson-log-store.js";
@@ -239,6 +239,89 @@ export async function initConfigHome(
   opts: import("./use-cases/config-init.js").ConfigInitOptions = {},
 ): Promise<import("./entities/errors.js").Result<import("./use-cases/config-init.js").ConfigInitResult>> {
   return new ConfigInit(new NodeInitFs(), voidriftConfigDir(), seedAgentsDir).run(opts);
+}
+
+/**
+ * Host-level discovery of enabled plugins' agent templates (§12.4, §13.9.1).
+ * Resolves enabled plugins from the config cascade (project > global) + plugin-store
+ * resolution, runs ONLY each plugin's `register` against a registration-only services stub,
+ * and collects the `register.agents` templates. No model, no network, no engine/graph,
+ * no MCP servers, no session. Returns the collected templates and loaded plugin ids.
+ * Plugin failures are contained (returned as warnings, never thrown).
+ */
+export async function discoverPluginAgentTemplates(
+  opts: { workspaceRoot: string } = { workspaceRoot: process.cwd() },
+): Promise<
+  import("./entities/errors.js").Result<{
+    templates: import("./use-cases/config-init.js").PluginAgentTemplate[];
+    plugins: string[];
+    warnings?: { plugin: string; error: string }[];
+  }>
+> {
+  const workspaceRoot = opts.workspaceRoot;
+  const globalDir = voidriftConfigDir();
+
+  try {
+    // Load config cascade (project > global, read-only) via ConfigCapability
+    const configStore = new FilesystemConfigStore(workspaceRoot, undefined, globalDir);
+    const bus = new EventBus();
+    const config = new ConfigCapability(configStore, (type, payload) => bus.emit(type, payload, {}));
+    await config.load().catch(() => undefined); // Load errors are logged but not fatal
+
+    const templates: import("./use-cases/config-init.js").PluginAgentTemplate[] = [];
+    const warnings: { plugin: string; error: string }[] = [];
+
+    // Subscribe to loader errors (license rejects, resolve failures, etc.)
+    const errorHandler = (envelope: import("./entities/event-bus.js").EventEnvelope) => {
+      const evt = envelope.payload as { source?: string; message?: string };
+      if (evt.message) {
+        warnings.push({ plugin: "loader", error: evt.message });
+      }
+    };
+    bus.subscribe("ERROR_OCCURRED", errorHandler);
+
+    // Create discovery services: registration-only, collects agent templates
+    const { makeDiscoveryCoreServices } = await import("./boot-plugin-discovery-services.js");
+    const discoveryServices = makeDiscoveryCoreServices(
+      (template) => {
+        templates.push(template);
+      },
+      (pluginId, error) => {
+        warnings.push({ plugin: pluginId, error });
+      },
+    );
+
+    // Use the real Plugins class with discovery-only services and in-memory registry
+    const { InMemoryRegistryPersistence } = await import("./entities/registry/registry-persistence.js");
+    const registryStore = new RegistryStore(
+      new InMemoryRegistryPersistence(),
+    );
+    const pluginLoader = new PluginLoader(workspaceRoot, globalDir);
+
+    const plugins = new Plugins({
+      bus,
+      loader: pluginLoader,
+      services: discoveryServices,
+      registryStore,
+      getPlugins: () => config.get().plugins ?? {},
+      setPlugins: async () => err(coreError(ErrorCode.INTERNAL, "setPlugins not supported in discovery")),
+    });
+
+    // Load all enabled plugins (license gated, register called, agent templates collected)
+    await plugins.loadAll();
+
+    // Get the list of loaded plugins directly from the Plugins.loaded map
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-member-access
+    const loadedPlugins = Array.from(((plugins as unknown) as { loaded: Map<string, unknown> }).loaded.keys()) as string[];
+
+    return ok({
+      templates,
+      plugins: loadedPlugins,
+      ...(warnings.length > 0 ? { warnings } : {}),
+    });
+  } catch (e) {
+    return err(coreError(ErrorCode.INTERNAL, `plugin discovery: ${String(e)}`));
+  }
 }
 
 /**
@@ -1729,53 +1812,22 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
     // to the project. On disable, the template source is removed but copied
     // files are never touched (§12.4 Integration test).
     registerPluginAgents: async (pluginId, dir, pluginRealPath) => {
-      // Use resolveInside to safely resolve and confine the agents path
-      const realAgentsPath = await resolveInside(pluginRealPath, dir);
-
-      if (realAgentsPath === null) {
-        // Confinement check failed: path traversal, absolute path, nonexistent, or symlink outside
-        bus.emit(
-          "ERROR_OCCURRED",
-          {
-            source: "agents",
-            message: `Plugin "${pluginId}" agents path is outside plugin directory or invalid: ${dir}`,
-          },
-          {}
-        );
-        return;
-      }
-
-      // Scan the directory for agent templates: <realAgentsPath>/<name>/{agent.json,prompt.md}
-      try {
-        const entries = await fsp.readdir(realAgentsPath, { withFileTypes: true }).catch(() => []);
-        for (const entry of entries) {
-          if (!entry.isDirectory()) continue;
-          // Validate name is a lowercase slug (no automatic lowercasing)
-          if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(entry.name)) {
-            bus.emit(
-              "ERROR_OCCURRED",
-              {
-                source: "agents",
-                message: `Plugin "${pluginId}" agent template "${entry.name}" is not a lowercase slug`,
-              },
-              {}
-            );
-            continue;
-          }
-
-          const templatePath = path.join(realAgentsPath, entry.name);
-          agentTemplatesRegistry.register({
-            pluginId,
-            dir: templatePath,
-            name: entry.name,
-          });
-        }
-      } catch (e) {
-        bus.emit(
-          "ERROR_OCCURRED",
-          { source: "agents", message: `Plugin "${pluginId}" agents scan failed: ${String(e)}` },
-          {}
-        );
+      // Use the extracted scanAgentTemplates helper to collect templates safely
+      const { scanAgentTemplates } = await import("./adapters/agent-template-scan.js");
+      const templates = await scanAgentTemplates(
+        pluginId,
+        dir,
+        pluginRealPath,
+        (message) => {
+          bus.emit(
+            "ERROR_OCCURRED",
+            { source: "agents", message: `Plugin "${pluginId}" ${message}` },
+            {}
+          );
+        },
+      );
+      for (const template of templates) {
+        agentTemplatesRegistry.register(template);
       }
     },
     unregisterPluginAgents: (pluginId) => {

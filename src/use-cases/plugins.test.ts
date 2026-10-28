@@ -244,6 +244,69 @@ describe("Plugins capability (§12.4)", () => {
     expect(list.find((p) => p.id === "b")).toMatchObject({ hasOptions: true });
   });
 
+  it("await on register.agents and register.docs completes before loadAll returns (no race, §12.4)", async () => {
+    const calls: string[] = [];
+    const loader = fakeLoader({
+      resolved: { a: resolved("a") },
+      registers: {
+        a: async (core: any) => {
+          // Call register.agents and register.docs which are now async-awaitable
+          core.register.agents("./agents");
+          core.register.docs("./docs");
+        },
+      },
+    });
+    const services = {
+      registerCommand: () => {},
+      unregisterCommand: () => {},
+      registerTool: () => {},
+      unregisterTool: () => {},
+      registerPrompt: () => {},
+      overridePrompt: () => {},
+      extendPrompt: () => {},
+      removePrompt: () => {},
+      registerContextProvider: () => "ctx:0",
+      unregisterContextProvider: () => {},
+      registerModelProvider: () => {},
+      unregisterModelProvider: () => {},
+      registerExporter: () => "exp:0",
+      unregisterExporter: () => {},
+      registerPanel: () => "panels.x",
+      unregisterPanel: () => {},
+      registerDataset: () => "datasets.x",
+      unregisterDataset: () => {},
+      registerAgent: () => {},
+      registerGuardrail: () => {},
+      registerScope: () => "scope:0",
+      unregisterScope: () => {},
+      unregisterScopeKey: () => {},
+      registerExpectation: () => {},
+      clearExpectation: () => {},
+      closeExpectation: () => {},
+      registerChunker: () => "chunker:0",
+      unregisterChunker: () => {},
+      registerPluginDocs: async () => { calls.push("docs-registered"); },
+      unregisterPluginDocs: () => {},
+      registerPluginAgents: async () => { calls.push("agents-registered"); },
+      unregisterPluginAgents: () => {},
+      runInNewSession: async () => ({ status: "completed" }),
+      workspace: { files: async () => [], readText: async () => null, currentInput: () => "", focusPaths: () => [], cacheDir: () => "/tmp", hashFor: () => null },
+    } as unknown as CoreServices;
+    const env = {
+      bus: new EventBus(),
+      loader,
+      services,
+      registryStore: new RegistryStore(),
+      getPlugins: () => ({ a: { enabled: true } }),
+      setPlugins: async (n: Record<string, PluginEntry>) => ({ ok: true as const, value: n }),
+    };
+    const plugins = new Plugins(env);
+    await plugins.loadAll();
+    // Both should be recorded, with no race condition (§12.4)
+    expect(calls).toContain("agents-registered");
+    expect(calls).toContain("docs-registered");
+  });
+
   it("skips a disabled entry and dedupes two entries to the same real path", async () => {
     let registerCount = 0;
     const loader = fakeLoader({

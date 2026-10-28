@@ -302,7 +302,8 @@ export class ConfigInit {
    * Seed plugin agent templates into a project's .voidrift/agents/ directory
    * (§12.4, §13.9.1). For each enabled plugin template, copy the two files
    * (agent.json, prompt.md) atomically. Skip (report `kept:`) on collision with
-   * existing agent, validation failure, or symlinked template file. Never
+   * existing agent, validation failure, or symlinked template file. Identical
+   * already-copied templates appear in neither seeded nor kept (no-op). Never
    * overwrite existing agent directories.
    */
   private async seedPluginAgents(
@@ -314,13 +315,7 @@ export class ConfigInit {
     const agentsDir = path.join(projectRoot, "agents");
     for (const template of templates) {
       const targetDir = path.join(agentsDir, template.name);
-      // Check for collision: does the target directory already exist?
-      const existing = await this.fs.exists(targetDir);
-      if (existing) {
-        kept.push({ name: template.name, reason: "agent directory already exists" });
-        continue;
-      }
-
+      
       // Read the template files from the template directory
       // template.dir is the template directory itself (e.g., <agents>/<name>)
       const agentJsonSrc = path.join(template.dir, "agent.json");
@@ -341,7 +336,26 @@ export class ConfigInit {
         continue;
       }
 
+      // Check for existing directory FIRST (before validation)
+      // This way collisions report "already exists" not validation errors
+      const existing = await this.fs.exists(targetDir);
+      if (existing) {
+        // If the directory exists, check if the content is identical (no-op case)
+        const existingJsonContent = await this.fs.readFile(path.join(targetDir, "agent.json"));
+        const existingPromptContent = await this.fs.readFile(path.join(targetDir, "prompt.md"));
+        
+        if (existingJsonContent === agentJsonContent && existingPromptContent === promptMdContent) {
+          // Identical content — this is a no-op (§13.9.1): appears in neither group
+          continue;
+        }
+        
+        // Different existing agent — keep it with reason
+        kept.push({ name: template.name, reason: "agent directory already exists" });
+        continue;
+      }
+
       // Validate agent.json with the same validator used for ordinary agents
+      // Only validate after checking for collisions so collision messages are "already exists"
       const agentValidator = this.createAgentValidator(template.name, promptMdContent);
       const validationError = agentValidator(agentJsonContent);
       if (validationError !== null) {

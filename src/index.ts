@@ -24,6 +24,7 @@ export {
   voidriftConfigDir,
   doctorConfigHome,
   accessReportConfigHome,
+  discoverPluginAgentTemplates,
 } from "./boot.js";
 export type { CoreOptions, CoreReady, ManagedStatus } from "./boot.js";
 export { CoreAPI } from "./facade.js";
