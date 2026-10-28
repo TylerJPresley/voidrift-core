@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-28
+
+### Added
+- README: installation and verified usage instructions
+
+### Fixed
+- Security: zod 4.6.7 (high advisory)
+- Security: undici 8.12.3 (high advisory)
+
 ## [0.1.0] - 2026-10-28
 
 ### Added

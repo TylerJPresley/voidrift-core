@@ -1,6 +1,6 @@
 {
   "name": "@voidrift/core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "VoidRift core SDK — the headless, model- and environment-agnostic agentic engine.",
   "license": "Apache-2.0",
   "type": "module",

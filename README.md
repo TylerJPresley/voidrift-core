@@ -2,7 +2,7 @@
 
 VoidRift core SDK — the headless, model- and environment-agnostic agentic engine.
 
-**Status:** pre-release 0.1.0, under active development.
+**Status:** pre-release, under active development.
 
 ## What it is
 

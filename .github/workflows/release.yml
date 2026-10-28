@@ -1,0 +1,55 @@
+# Trusted publishing via OIDC + npm provenance.
+# Configure once on npmjs.com: package @voidrift/core > Settings > Trusted Publisher > GitHub Actions, repository TylerJPresley/voidrift-core, workflow release.yml.
+# https://docs.npmjs.com/trusted-publishers
+# Requires npm >= 11.5.1 (Node 24 has npm 11.19.1, satisfies requirement).
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Verify tag matches package version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          EXPECTED_TAG="v$(jq -r .version package.json)"
+          if [ "$TAG" != "$EXPECTED_TAG" ]; then
+            echo "Tag $TAG does not match package.json version $EXPECTED_TAG"
+            exit 1
+          fi
+      - name: Verify tag is ancestor of main
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          git fetch origin main
+          if ! git merge-base --is-ancestor "refs/tags/$TAG" origin/main; then
+            echo "Tag $TAG is not an ancestor of origin/main"
+            exit 1
+          fi
+      - name: Use Node.js 24
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm install
+      - run: npm run build
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm publish --provenance --access public
