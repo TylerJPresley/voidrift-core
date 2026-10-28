@@ -76,7 +76,7 @@ export type {
 } from "./entities/approvals.js";
 export type { Config, ConfigLayer, ModelConfigEntry, PermissionRule } from "./config/schema.js";
 export type { ConfigRejection, ConfigWarning, ValidationResult } from "./entities/config-capability.js";
-export type { ConfigInitOptions, ConfigInitResult } from "./use-cases/config-init.js";
+export type { ConfigInitOptions, ConfigInitResult, PluginAgentTemplate } from "./use-cases/config-init.js";
 export type { ConfigUpdatePreview, ConfigUpdatePlan, ConfigUpdateResult } from "./use-cases/config-init.js";
 // Known-shipped manifest (§13.9.1): the seeded allow-rule set builder and the
 // manifest hash helpers the generator script and the completeness test reach.
