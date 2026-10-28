@@ -89,6 +89,8 @@ describe("Plugin options size limit with layered action (§12.4, §13.11)", () =
         unregisterChunker: () => {},
         registerPluginDocs: async () => {},
         unregisterPluginDocs: () => {},
+        registerPluginAgents: async () => {},
+        unregisterPluginAgents: () => {},
         runInNewSession: async () => ({}),
         workspace: {
           files: async () => [],

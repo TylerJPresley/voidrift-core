@@ -68,6 +68,15 @@ export class NodeInitFs implements InitFs {
     }
   }
 
+  async isSymlink(absPath: string): Promise<boolean> {
+    try {
+      const stats = await fs.lstat(absPath);
+      return stats.isSymbolicLink();
+    } catch {
+      return false;
+    }
+  }
+
   async remove(absPath: string): Promise<void> {
     await fs.rm(absPath, { recursive: true, force: true });
   }

@@ -43,6 +43,13 @@ export const SEED_AGENTS = ["research", "vibe", "researcher", "planner", "implem
  * class after the agents: domain-neutral skills the global base materializes. */
 export const SEED_SKILLS = ["systems-thinking"] as const;
 
+/** Plugin agent template (from agent templates registry, §12.4, §13.9.1). */
+export interface PluginAgentTemplate {
+  pluginId: string;
+  dir: string;
+  name: string;
+}
+
 /** Options for `config.init` (§13.9.1). */
 export interface ConfigInitOptions {
   /** Which installation to materialize; defaults to `global`. */
@@ -54,6 +61,9 @@ export interface ConfigInitOptions {
   reset?: string[];
   /** Required with `reset`: without it a reset refuses and changes nothing. */
   confirmed?: boolean;
+  /** Plugin agent templates to seed during project init (§12.4, §13.9.1).
+   * Only used with `scope: "project"`; ignored for global scope. */
+  pluginAgents?: PluginAgentTemplate[];
 }
 
 /** The grouped outcome (§13.9.1). Paths are relative to the resolved root, sorted. */
@@ -61,6 +71,10 @@ export interface ConfigInitResult {
   created: string[];
   repaired: string[];
   leftAlone: string[];
+  /** Plugin agent templates successfully copied (project init only, §13.9.1). */
+  seeded?: string[];
+  /** Plugin agent templates skipped due to collision or validation (project init only). */
+  kept?: { name: string; reason: string }[];
 }
 
 /** The `voidrift init --sweep` outcome (§13.9.1): the leftover files moved into
@@ -232,6 +246,8 @@ export class ConfigInit {
     const created: string[] = [];
     const repaired: string[] = [];
     const leftAlone: string[] = [];
+    const seeded: string[] = [];
+    const kept: { name: string; reason: string }[] = [];
     const stamp = backupTimestamp();
     for (const t of targets) {
       const existing = await this.fs.readFile(t.abs);
@@ -257,9 +273,20 @@ export class ConfigInit {
     }
     if (repaired.length > 0) await this.pruneBackupSets(root!);
     // The project form also materializes an empty `agents/` folder (§13.9.1).
-    if (scope === "project") await this.fs.mkdirp(path.join(root!, "agents"));
+    if (scope === "project") {
+      await this.fs.mkdirp(path.join(root!, "agents"));
+      // Seed plugin agent templates (§12.4, §13.9.1).
+      if (opts.pluginAgents && opts.pluginAgents.length > 0) {
+        await this.seedPluginAgents(root!, opts.pluginAgents, seeded, kept);
+      }
+    }
 
-    return ok({ created: created.sort(), repaired: repaired.sort(), leftAlone: leftAlone.sort() });
+    return ok({
+      created: created.sort(),
+      repaired: repaired.sort(),
+      leftAlone: leftAlone.sort(),
+      ...(scope === "project" ? { seeded: seeded.sort(), kept } : {}),
+    });
   }
 
   /**
@@ -269,6 +296,87 @@ export class ConfigInit {
    */
   resetNames(): string[] {
     return ["config", ...SEED_AGENTS, ...SEED_SKILLS];
+  }
+
+  /**
+   * Seed plugin agent templates into a project's .voidrift/agents/ directory
+   * (§12.4, §13.9.1). For each enabled plugin template, copy the two files
+   * (agent.json, prompt.md) atomically. Skip (report `kept:`) on collision with
+   * existing agent, validation failure, or symlinked template file. Never
+   * overwrite existing agent directories.
+   */
+  private async seedPluginAgents(
+    projectRoot: string,
+    templates: PluginAgentTemplate[],
+    seeded: string[],
+    kept: { name: string; reason: string }[],
+  ): Promise<void> {
+    const agentsDir = path.join(projectRoot, "agents");
+    for (const template of templates) {
+      const targetDir = path.join(agentsDir, template.name);
+      // Check for collision: does the target directory already exist?
+      const existing = await this.fs.exists(targetDir);
+      if (existing) {
+        kept.push({ name: template.name, reason: "agent directory already exists" });
+        continue;
+      }
+
+      // Read the template files from the template directory
+      // template.dir is the template directory itself (e.g., <agents>/<name>)
+      const agentJsonSrc = path.join(template.dir, "agent.json");
+      const promptMdSrc = path.join(template.dir, "prompt.md");
+
+      // Check for symlinks (§12.4 integration: symlinked template files are refused)
+      const isSymlink = await this.fs.isSymlink(agentJsonSrc) || await this.fs.isSymlink(promptMdSrc);
+      if (isSymlink) {
+        kept.push({ name: template.name, reason: "template files contain symlinks" });
+        continue;
+      }
+
+      const agentJsonContent = await this.fs.readFile(agentJsonSrc);
+      const promptMdContent = await this.fs.readFile(promptMdSrc);
+
+      if (agentJsonContent === null || promptMdContent === null) {
+        kept.push({ name: template.name, reason: "template files missing" });
+        continue;
+      }
+
+      // Validate agent.json with the same validator used for ordinary agents
+      const agentValidator = this.createAgentValidator(template.name, promptMdContent);
+      const validationError = agentValidator(agentJsonContent);
+      if (validationError !== null) {
+        kept.push({ name: template.name, reason: validationError });
+        continue;
+      }
+
+      // Write atomically to the target directory
+      try {
+        await this.fs.mkdirp(targetDir);
+        await this.fs.writeFile(path.join(targetDir, "agent.json"), agentJsonContent);
+        await this.fs.writeFile(path.join(targetDir, "prompt.md"), promptMdContent);
+        seeded.push(template.name);
+      } catch (e) {
+        kept.push({ name: template.name, reason: `write failed: ${String(e)}` });
+        // Clean up partial write
+        try {
+          await this.fs.remove(targetDir);
+        } catch {
+          // ignore cleanup errors
+        }
+      }
+    }
+  }
+
+  /** Create a validator for an agent manifest (used for both seeded and plugin templates). */
+  private createAgentValidator(dirName: string, promptMd: string): Validator {
+    return (content: string): string | null => {
+      try {
+        parseAgentManifest(content, dirName, promptMd);
+        return null;
+      } catch (e) {
+        return e instanceof Error ? e.message : String(e);
+      }
+    };
   }
 
   // ── `init --update` (§13.9.1) ────────────────────────────────────────────

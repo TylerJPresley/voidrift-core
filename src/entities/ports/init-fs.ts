@@ -28,6 +28,9 @@ export interface InitFs {
    * when the directory is absent/unreadable. Used by the live-directory sweep
    * and the backup-set retention pruner (§13.9.1). */
   listDir(absPath: string): Promise<{ name: string; isDir: boolean }[]>;
+  /** Check if a path is a symlink (not following it). Returns false if the path
+   * doesn't exist or is not a symlink. */
+  isSymlink(absPath: string): Promise<boolean>;
   /** Remove a file or an entire directory tree (recursive), tolerating absence.
    * Used by backup-set retention (prune the oldest set) (§13.9.1). */
   remove(absPath: string): Promise<void>;

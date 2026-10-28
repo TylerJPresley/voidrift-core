@@ -59,6 +59,7 @@ import { Prompts } from "./use-cases/prompts.js";
 import { Plugins, type CoreServices, type PluginCommandHandler } from "./use-cases/plugins.js";
 import { SkillsDirectory } from "./adapters/skills-directory.js";
 import { AgentsDirectory } from "./adapters/agents-directory.js";
+import { AgentTemplatesRegistry } from "./adapters/agent-templates-registry.js";
 import { ConfigInit } from "./use-cases/config-init.js";
 import { NodeInitFs } from "./adapters/init-fs.js";
 import { seedConfigDocument } from "./config/seed.js";import { WorkspaceMap } from "./use-cases/workspace-map.js";
@@ -1481,6 +1482,10 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
   // Shipped core docs are registered at boot via registerDir.
   const manuals = new Manuals({ bus, toolRegistry: registry });
 
+  // Agent templates registry (§12.4, §13.9.1): tracks plugin-registered agent
+  // templates for discovery during config.init and cleanup on plugin disable.
+  const agentTemplatesRegistry = new AgentTemplatesRegistry();
+
   // Load shipped core docs (§12.8). Registered via registerDir which recursively
   // reads *.md under docs/ with ids = core/<slug>. A malformed doc is
   // ERROR_OCCURRED, not a crash. registerDir returns void or CoreError (never throws).
@@ -1717,6 +1722,65 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
     unregisterPluginDocs: (pluginId) => {
       // Unregister all docs contributed by this plugin
       manuals.unregisterPluginDocs(pluginId);
+    },
+    // §12.4, §13.9.1 — plugin agent templates registration. Templates are
+    // registered from a plugin's directory; path confinement mirrors docs.
+    // Templates are never runtime agents; config.init copies enabled templates
+    // to the project. On disable, the template source is removed but copied
+    // files are never touched (§12.4 Integration test).
+    registerPluginAgents: async (pluginId, dir, pluginRealPath) => {
+      // Use resolveInside to safely resolve and confine the agents path
+      const realAgentsPath = await resolveInside(pluginRealPath, dir);
+
+      if (realAgentsPath === null) {
+        // Confinement check failed: path traversal, absolute path, nonexistent, or symlink outside
+        bus.emit(
+          "ERROR_OCCURRED",
+          {
+            source: "agents",
+            message: `Plugin "${pluginId}" agents path is outside plugin directory or invalid: ${dir}`,
+          },
+          {}
+        );
+        return;
+      }
+
+      // Scan the directory for agent templates: <realAgentsPath>/<name>/{agent.json,prompt.md}
+      try {
+        const entries = await fsp.readdir(realAgentsPath, { withFileTypes: true }).catch(() => []);
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          // Validate name is a lowercase slug (no automatic lowercasing)
+          if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(entry.name)) {
+            bus.emit(
+              "ERROR_OCCURRED",
+              {
+                source: "agents",
+                message: `Plugin "${pluginId}" agent template "${entry.name}" is not a lowercase slug`,
+              },
+              {}
+            );
+            continue;
+          }
+
+          const templatePath = path.join(realAgentsPath, entry.name);
+          agentTemplatesRegistry.register({
+            pluginId,
+            dir: templatePath,
+            name: entry.name,
+          });
+        }
+      } catch (e) {
+        bus.emit(
+          "ERROR_OCCURRED",
+          { source: "agents", message: `Plugin "${pluginId}" agents scan failed: ${String(e)}` },
+          {}
+        );
+      }
+    },
+    unregisterPluginAgents: (pluginId) => {
+      // Remove all agent templates contributed by this plugin (§12.4)
+      agentTemplatesRegistry.unregisterPlugin(pluginId);
     },
     runInNewSession: async (firstPrompt, sopts) => {
       // The ONE implementation lives on the facade (§12.3, §5.7). It starts a
@@ -2164,6 +2228,7 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
       // reject the absolute path (§3.1, §12.1 workspace > global > builtin).
       new FilesystemAdapter(voidriftConfigDir()),
     ),
+    agentTemplatesRegistry,
     configInit,
     configDoctor: (opts) => doctorConfigHome({ ...(opts ?? {}), workspaceRoot }),
     configAccess: (opts) => accessReportConfigHome({ ...(opts ?? {}), workspaceRoot }),

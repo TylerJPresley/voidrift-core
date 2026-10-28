@@ -147,6 +147,15 @@ export interface CoreServices {
   /** Unregister all docs contributed by a plugin (called on plugin teardown, §12.8). */
   unregisterPluginDocs(pluginId: string): void;
   /**
+   * Register agent templates from a directory (§12.4, §13.9.1). Each template is
+   * `<dir>/<name>/{agent.json,prompt.md}`. The plugin id is forced as the source;
+   * errors are contained and logged. On plugin teardown, all templates for this
+   * plugin are removed via `unregisterPluginAgents` but copied files are never touched.
+   */
+  registerPluginAgents(pluginId: string, dir: string, pluginRealPath: string): Promise<void>;
+  /** Unregister all agent templates contributed by a plugin (called on teardown). */
+  unregisterPluginAgents(pluginId: string): void;
+  /**
    * Start a NEW session and send a first prompt (§12.3). A routine runs clean
    * every time; the host-facing `session.command("routine", id)` reaches this.
    * Returns the DTO result of the turn.
@@ -305,6 +314,17 @@ export interface ScopedCoreApi {
      * Returns void on success (errors are contained and logged).
      */
     docs(dir: string): void;
+    /**
+     * Register agent templates from a directory (§12.4, §13.9.1). Each template is
+     * `<dir>/<name>/{agent.json,prompt.md}` with lowercase slug names. The templates
+     * are never runtime agents; `config.init` copies enabled plugin templates into
+     * the project's `.voidrift/agents/` as user-owned files. The source is forced
+     * to the plugin id. On disable, the template source is removed but copied files
+     * are never touched. Path confinement mirrors `docs`: symlinks escaping the
+     * plugin package are refused. Returns void on success; errors are contained and
+     * logged.
+     */
+    agents(dir: string): void;
   };
   /**
    * The §9.5.1 expectation seam (prediction vs journal). Plugin-callable: the
@@ -382,6 +402,7 @@ interface Contributions {
   datasets: string[];
   scopes: string[];
   chunkers: string[];
+  agents: string[];
   unsubscribes: (() => void)[];
 }
 
@@ -688,6 +709,18 @@ export class Plugins {
             }
           })();
         },
+        agents: (dir: string) => {
+          // §12.4, §13.9.1 — register agent templates from a directory.
+          // Source (plugin id) is forced; path confinement mirrors docs.
+          // Errors are caught and logged; templates are tracked for teardown.
+          void (async () => {
+            try {
+              await s.registerPluginAgents(pluginId, dir, realPath);
+            } catch (e) {
+              this.logError(`plugin "${pluginId}" agents registration failed: ${String(e)}`);
+            }
+          })();
+        },
       },
       expectations: {
         register: (req) => s.registerExpectation(req?.scope, req?.predicted),
@@ -770,6 +803,9 @@ export class Plugins {
     for (const key of c.chunkers) this.deps.services.unregisterChunker(key);
     // §12.8 — unregister all docs contributed by this plugin.
     this.deps.services.unregisterPluginDocs(pluginId);
+    // §12.4 — unregister all agent templates contributed by this plugin.
+    // Already-copied agents remain untouched (§12.4 Integration test).
+    this.deps.services.unregisterPluginAgents(pluginId);
     for (const unsub of c.unsubscribes) unsub();
     this.deps.registryStore.removeNamespace(pluginId);
   }
@@ -1078,5 +1114,5 @@ export class Plugins {
 }
 
 function emptyContributions(): Contributions {
-  return { commands: [], tools: [], prompts: [], contextProviders: [], modelProviders: [], exporters: [], panels: [], datasets: [], scopes: [], chunkers: [], unsubscribes: [] };
+  return { commands: [], tools: [], prompts: [], contextProviders: [], modelProviders: [], exporters: [], panels: [], datasets: [], scopes: [], chunkers: [], agents: [], unsubscribes: [] };
 }

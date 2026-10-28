@@ -54,6 +54,8 @@ export function fakeCoreServices(overrides?: Partial<CoreServices>): CoreService
     unregisterChunker: noop,
     registerPluginDocs: async () => {},
     unregisterPluginDocs: noop,
+    registerPluginAgents: async () => {},
+    unregisterPluginAgents: noop,
     runInNewSession: async () => ({ status: "completed" }),
     workspace: fakeWorkspace,
     ...overrides,

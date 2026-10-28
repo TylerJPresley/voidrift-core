@@ -290,6 +290,9 @@ export interface FacadeDeps {
    * Discovers manifests from `.voidrift/agents/` (workspace) and the global dir;
    * builtin/plugin manifests register through `register.agent`. */
   agentDiscovery: AgentDiscoveryPort;
+  /** Agent templates registry (§12.4, §13.9.1): tracks plugin-registered agent
+   * templates for discovery during config.init and cleanup on plugin disable. */
+  agentTemplatesRegistry: import("./adapters/agent-templates-registry.js").AgentTemplatesRegistry;
   /** The host-only `config.init` use-case (§13.9.1). Bound to the `config`
    * namespace's `init` method; it is NOT a model tool and NOT on the plugin
    * ScopedCoreApi. */
@@ -1305,7 +1308,10 @@ export class CoreAPI {
     init: async (
       opts?: import("./use-cases/config-init.js").ConfigInitOptions,
     ): Promise<Result<import("./use-cases/config-init.js").ConfigInitResult>> =>
-      this.deps.configInit.run(opts ?? {}),
+      this.deps.configInit.run({
+        ...opts,
+        ...(opts?.scope === "project" && !opts.pluginAgents ? { pluginAgents: this.deps.agentTemplatesRegistry.getAll() } : {}),
+      }),
     /**
      * Validate every resource and configuration (§13.9.2) — HOST-ONLY. Like
      * `config.init`, this is on the `config` namespace a product calls directly;

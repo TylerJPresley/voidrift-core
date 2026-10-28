@@ -70,6 +70,8 @@ function makeServicesWithStore(store: Map<string, Chunker>): CoreServices {
     unregisterChunker: (key) => void store.delete(key),
     registerPluginDocs: async () => {},
     unregisterPluginDocs: () => {},
+    registerPluginAgents: async () => {},
+    unregisterPluginAgents: () => {},
     runInNewSession: async () => ({}),
     workspace: { files: async () => [], readText: async () => null, currentInput: () => "", focusPaths: () => [], cacheDir: () => "/tmp/cache", hashFor: () => null, pluginFiles: { list: async () => [], read: async () => null, write: async () => {}, remove: async () => {} } },
   };
