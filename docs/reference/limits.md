@@ -6,7 +6,7 @@ type: reference
 
 # Configuration Limits
 
-VoidRift has **99** configurable limits across **24** areas. Each is a
+VoidRift has **101** configurable limits across **24** areas. Each is a
 key under `limits.<area>.<name>`; a `tunable` limit follows the normal cascade (the
 narrower layer wins), a `safety` limit may only be *lowered* by a project/session layer,
 and an `integrity` limit may only be *raised* by a project/session layer (it protects an
@@ -189,6 +189,8 @@ audit/restore guarantee, so lowering it from an untrusted project config is igno
 | Key | Unit | Class | Meaning |
 |---|---|---|---|
 | `plugins.optionsMaxBytes` | bytes | safety | Plugin options byte cap (payload bound). |
+| `plugins.registryFileMaxBytes` | bytes | safety | Registry file byte cap (§12.5): file over limit is set aside as .rejected on deny, accepted on warn with LIMIT_HIT. |
+| `plugins.registryValueMaxBytes` | bytes | safety | Registry per-value byte cap (§12.5): value over limit is refused on deny, stored on warn with LIMIT_HIT. |
 | `plugins.searchMaxBytes` | bytes | safety | Plugin registry search response byte cap. |
 | `plugins.installMaxBytes` | bytes | safety | Plugin install payload byte cap. |
 | `plugins.listPageDefault` | count | tunable | Plugin list default page size. |

@@ -63,13 +63,30 @@ describe("RegistryStore — durable mode (§12.5)", () => {
     expect(store.get("p", "routine:a")).toBeNull();
   });
 
-  it("refuses a value over the 64 KiB per-value cap", () => {
-    const store = new RegistryStore(new InMemoryRegistryPersistence());
+  it("refuses a value over the 64 KiB per-value cap with deny action", () => {
+    const store = new RegistryStore(new InMemoryRegistryPersistence(), {
+      getLimit: () => 64 * 1024,
+      getLimitAction: () => "deny",
+    });
     const big = "x".repeat(64 * 1024 + 1);
     expect(() => store.set("p", "k", big)).toThrow(/per-value cap/);
     // The in-memory store (no persistence) does not cap — identical API, no throw.
     const plain = new RegistryStore();
     expect(() => plain.set("p", "k", big)).not.toThrow();
+  });
+
+  it("stores a value over the 64 KiB per-value cap with warn action and emits LIMIT_HIT", () => {
+    const limits: any[] = [];
+    const store = new RegistryStore(new InMemoryRegistryPersistence(), {
+      getLimit: () => 64 * 1024,
+      getLimitAction: () => "warn",
+      onLimitHit: (key, detail) => limits.push({ key, detail }),
+    });
+    const big = "x".repeat(64 * 1024 + 1);
+    expect(() => store.set("p", "k", big)).not.toThrow();
+    expect(limits).toHaveLength(1);
+    expect(limits[0].key).toBe("plugins.registryValueMaxBytes");
+    expect(store.get("p", "k")).toBe(big);
   });
 
   it("lazy-loads a namespace only once, then reads from memory", () => {

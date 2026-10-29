@@ -7,8 +7,10 @@ import {
   InMemoryRegistryPersistence,
   pluginShortName,
   isRegistryFile,
-  REGISTRY_FILE_MAX_BYTES,
 } from "./registry-persistence.js";
+import { getLimitSpec } from "../limits.js";
+
+const REGISTRY_FILE_MAX_BYTES = getLimitSpec("plugins.registryFileMaxBytes")?.default ?? 1024 * 1024;
 
 /** A hermetic temp workspace for each test. */
 function tmp(): { workspace: string; cleanup: () => void } {
@@ -93,9 +95,33 @@ describe("NodeRegistryPersistence (§12.5, STAGE 1)", () => {
     expect(warn).toHaveLength(2);
   });
 
-  it("a file over the 1 MiB cap is set aside, plugin starts empty", () => {
-    const warn: string[] = [];
-    const p = new NodeRegistryPersistence(env.workspace, (m) => warn.push(m));
+  it("a file over the 1 MiB cap with action warn loads and emits LIMIT_HIT", () => {
+    const warns: string[] = [];
+    const limits: any[] = [];
+    const p = new NodeRegistryPersistence(env.workspace, (m) => warns.push(m), {
+      getLimit: () => REGISTRY_FILE_MAX_BYTES,
+      getLimitAction: () => "warn",
+      onLimitHit: (key, detail) => limits.push({ key, detail }),
+    });
+    const dir = path.join(env.workspace, ".voidrift", "plugins", "huge");
+    fs.mkdirSync(dir, { recursive: true });
+    const huge = { version: 1, entries: { big: "x".repeat(REGISTRY_FILE_MAX_BYTES + 10) } };
+    const file = path.join(dir, "registry.json");
+    fs.writeFileSync(file, JSON.stringify(huge));
+    const loaded = p.load("huge");
+    expect(loaded).toEqual({ big: "x".repeat(REGISTRY_FILE_MAX_BYTES + 10) });
+    expect(fs.existsSync(`${file}.rejected`)).toBe(false);
+    expect(limits).toHaveLength(1);
+    expect(limits[0].key).toBe("plugins.registryFileMaxBytes");
+    expect(limits[0].detail.action).toBe("warn");
+  });
+
+  it("a file over the 1 MiB cap with action deny is set aside, plugin starts empty", () => {
+    const warns: string[] = [];
+    const p = new NodeRegistryPersistence(env.workspace, (m) => warns.push(m), {
+      getLimit: () => REGISTRY_FILE_MAX_BYTES,
+      getLimitAction: () => "deny",
+    });
     const dir = path.join(env.workspace, ".voidrift", "plugins", "huge");
     fs.mkdirSync(dir, { recursive: true });
     const huge = { version: 1, entries: { big: "x".repeat(REGISTRY_FILE_MAX_BYTES + 10) } };
@@ -103,7 +129,7 @@ describe("NodeRegistryPersistence (§12.5, STAGE 1)", () => {
     fs.writeFileSync(file, JSON.stringify(huge));
     expect(p.load("huge")).toEqual({});
     expect(fs.existsSync(`${file}.rejected`)).toBe(true);
-    expect(warn).toHaveLength(1);
+    expect(warns).toHaveLength(1);
   });
 
   it("two processes writing at once end consistent — last-writer-wins per file, no corruption (documented)", () => {

@@ -83,8 +83,8 @@ export function qualifyKey(namespace: string, key: string): string {
   return `${namespace}\u0000${key}`;
 }
 
-import type { RegistryPersistencePort } from "./registry-persistence.js";
-import { REGISTRY_VALUE_MAX_BYTES } from "./registry-persistence.js";
+import type { RegistryPersistencePort, RegistryLimitInjections } from "./registry-persistence.js";
+import { getLimitSpec } from "../limits.js";
 
 /**
  * The namespaced key-value store (§12.5). In-memory by default; given a
@@ -105,8 +105,24 @@ export class RegistryStore {
   private readonly store = new Map<string, unknown>();
   /** Namespaces whose durable file has been loaded into `store` this process. */
   private readonly loaded = new Set<string>();
+  private readonly getLimit: (key: string) => number;
+  private readonly getLimitAction: (key: string) => "warn" | "deny";
+  private readonly onLimitHit: (key: string, detail: { observed: number; cap: number; action: string }) => void;
 
-  constructor(private readonly persistence?: RegistryPersistencePort) {}
+  constructor(
+    private readonly persistence?: RegistryPersistencePort,
+    injections?: RegistryLimitInjections,
+  ) {
+    this.getLimit = injections?.getLimit ?? ((key: string) => {
+      const spec = getLimitSpec(key);
+      return spec?.default ?? 64 * 1024; // 64 KiB fallback
+    });
+    this.getLimitAction = injections?.getLimitAction ?? ((key: string) => {
+      const spec = getLimitSpec(key);
+      return spec?.action ?? "warn";
+    });
+    this.onLimitHit = injections?.onLimitHit ?? (() => {});
+  }
 
   /** True when a namespace is persisted (durable mode on, and not reserved). */
   private durable(namespace: string): boolean {
@@ -138,13 +154,23 @@ export class RegistryStore {
   set(namespace: string, key: string, value: unknown): void {
     this.ensureLoaded(namespace);
     if (this.durable(namespace)) {
-      // Per-value cap (§12.5): a value over 64 KiB serialized is refused so one
-      // oversized value cannot bloat the plugin file past its own 1 MiB cap.
+      // Per-value cap (§12.5, §13.11): a value over cap serialized is handled
+      // by the limit action: warn => stored + emit, deny => refuse
       const size = Buffer.byteLength(JSON.stringify(value) ?? "", "utf8");
-      if (size > REGISTRY_VALUE_MAX_BYTES) {
-        throw new Error(
-          `registry value for "${key}" is ${size} bytes, over the ${REGISTRY_VALUE_MAX_BYTES}-byte per-value cap`,
-        );
+      const cap = this.getLimit("plugins.registryValueMaxBytes");
+      const action = this.getLimitAction("plugins.registryValueMaxBytes");
+      if (size > cap) {
+        if (action === "deny") {
+          throw new Error(
+            `registry value for "${key}" is ${size} bytes, over the ${cap}-byte per-value cap`,
+          );
+        }
+        // Warn action: emit LIMIT_HIT but store anyway
+        this.onLimitHit("plugins.registryValueMaxBytes", {
+          observed: size,
+          cap,
+          action: "warn",
+        });
       }
     }
     this.store.set(qualifyKey(namespace, key), value);

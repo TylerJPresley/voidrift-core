@@ -1557,8 +1557,33 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
   // Reserved core namespaces stay in memory.
   const registryPersistence = new NodeRegistryPersistence(workspaceRoot, (message) =>
     bus.emit("ERROR_OCCURRED", { source: "registry", message }, {}),
+    {
+      getLimit: (key: string) => limits.get(key),
+      getLimitAction: (key: string) => limits.action(key),
+      onLimitHit: (key: string, detail) =>
+        bus.emit("LIMIT_HIT", {
+          key,
+          area: key.split(".")[0],
+          value: detail.cap,
+          action: detail.action,
+          observed: detail.observed,
+          notice: `registry ${detail.action === "deny" ? "denied" : "warned"}: ${key} ${detail.observed} > ${detail.cap}`,
+        }, {}),
+    },
   );
-  const registryStore = new RegistryStore(registryPersistence);
+  const registryStore = new RegistryStore(registryPersistence, {
+    getLimit: (key: string) => limits.get(key),
+    getLimitAction: (key: string) => limits.action(key),
+    onLimitHit: (key: string, detail) =>
+      bus.emit("LIMIT_HIT", {
+        key,
+        area: key.split(".")[0],
+        value: detail.cap,
+        action: detail.action,
+        observed: detail.observed,
+        notice: `registry ${detail.action === "deny" ? "denied" : "warned"}: ${key} ${detail.observed} > ${detail.cap}`,
+      }, {}),
+  });
   const commands = new Map<string, { pluginId: string; handler: PluginCommandHandler }>();
 
   // The global skills dir is outside the workspace, so — like the agents — it is

@@ -17,6 +17,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { getLimitSpec } from "../limits.js";
 
 /** The on-disk file schema (§12.5): a versioned envelope of a plugin's keys. */
 export interface RegistryFile {
@@ -26,12 +27,6 @@ export interface RegistryFile {
 
 /** The current (only) on-disk schema version. */
 export const REGISTRY_FILE_VERSION = 1 as const;
-
-/** The 1 MiB per-plugin file cap (§12.5): a larger file is set aside. */
-export const REGISTRY_FILE_MAX_BYTES = 1024 * 1024;
-
-/** The 64 KiB per-value cap (§12.5): a larger value is refused at write. */
-export const REGISTRY_VALUE_MAX_BYTES = 64 * 1024;
 
 /**
  * Derive the plugin's SHORT name from its id: scope and `plugin-` prefix stripped,
@@ -86,6 +81,16 @@ export interface RegistryPersistencePort {
 /** A warning sink: one line naming a set-aside file (§12.5). */
 export type RegistryWarn = (message: string) => void;
 
+/** Callbacks for injected limits enforcement (§12.5, §13.11). */
+export interface RegistryLimitInjections {
+  /** Get the effective limit value; defaults to registry default if not injected. */
+  getLimit?: (key: string) => number;
+  /** Get the effective limit action (warn|deny); defaults to registry action if not injected. */
+  getLimitAction?: (key: string) => "warn" | "deny";
+  /** Emit a LIMIT_HIT event when a limit is exceeded (warn action). */
+  onLimitHit?: (key: string, detail: { observed: number; cap: number; action: string }) => void;
+}
+
 /**
  * The real filesystem adapter (§12.5, STAGE 1). Writes inside the workspace at
  * `.voidrift/plugins/<short-name>/registry.json`; dirs `0700`, files `0600`,
@@ -96,12 +101,25 @@ export type RegistryWarn = (message: string) => void;
  */
 export class NodeRegistryPersistence implements RegistryPersistencePort {
   private readonly baseDir: string;
+  private readonly getLimit: (key: string) => number;
+  private readonly getLimitAction: (key: string) => "warn" | "deny";
+  private readonly onLimitHit: (key: string, detail: { observed: number; cap: number; action: string }) => void;
 
   constructor(
     workspaceRoot: string,
     private readonly warn: RegistryWarn = () => {},
+    injections?: RegistryLimitInjections,
   ) {
     this.baseDir = path.join(workspaceRoot, ".voidrift", "plugins");
+    this.getLimit = injections?.getLimit ?? ((key: string) => {
+      const spec = getLimitSpec(key);
+      return spec?.default ?? 1024 * 1024; // 1 MiB fallback for file, 64 KiB fallback for value
+    });
+    this.getLimitAction = injections?.getLimitAction ?? ((key: string) => {
+      const spec = getLimitSpec(key);
+      return spec?.action ?? "warn";
+    });
+    this.onLimitHit = injections?.onLimitHit ?? (() => {});
   }
 
   /** The base plugins directory for this adapter (for doctor STORAGE check). */
@@ -122,9 +140,20 @@ export class NodeRegistryPersistence implements RegistryPersistencePort {
     let raw: string;
     try {
       const stat = fs.statSync(file);
-      if (stat.size > REGISTRY_FILE_MAX_BYTES) {
-        this.setAside(file, `registry file ${file} exceeds the ${REGISTRY_FILE_MAX_BYTES}-byte cap`);
-        return {};
+      const fileCap = this.getLimit("plugins.registryFileMaxBytes");
+      const fileAction = this.getLimitAction("plugins.registryFileMaxBytes");
+      if (stat.size > fileCap) {
+        // File over limit: action warn => load + emit, action deny => set aside
+        if (fileAction === "deny") {
+          this.setAside(file, `registry file ${file} exceeds the ${fileCap}-byte cap`);
+          return {};
+        }
+        // Warn action: emit LIMIT_HIT but continue loading
+        this.onLimitHit("plugins.registryFileMaxBytes", {
+          observed: stat.size,
+          cap: fileCap,
+          action: "warn",
+        });
       }
       raw = fs.readFileSync(file, "utf8");
     } catch {

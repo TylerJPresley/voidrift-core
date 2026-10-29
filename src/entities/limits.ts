@@ -223,6 +223,8 @@ export const LIMITS: readonly LimitSpec[] = [
 
   // --- plugins (H) ---
   { key: "plugins.optionsMaxBytes", area: "plugins", default: 64 * KIB, unit: "bytes", class: "safety", action: "warn", min: 1, max: 16 * MIB, doc: "Plugin options byte cap (payload bound).", inv: "PLG1", schemaTimeOnly: "schema accepts any size at validation; runtime check in plugins.ts loadResolved() enforces this limit with the effective action (warn → accept + emit, deny → refuse)" },
+  { key: "plugins.registryFileMaxBytes", area: "plugins", default: 1 * MIB, unit: "bytes", class: "safety", action: "warn", min: 1, max: 100 * MIB, doc: "Registry file byte cap (§12.5): file over limit is set aside as .rejected on deny, accepted on warn with LIMIT_HIT.", inv: "REG1" },
+  { key: "plugins.registryValueMaxBytes", area: "plugins", default: 64 * KIB, unit: "bytes", class: "safety", action: "warn", min: 1, max: 16 * MIB, doc: "Registry per-value byte cap (§12.5): value over limit is refused on deny, stored on warn with LIMIT_HIT.", inv: "REG1" },
   { key: "plugins.searchMaxBytes", area: "plugins", default: 5_000_000, unit: "bytes", class: "safety", action: "deny", min: 1, max: 1 * GIB, doc: "Plugin registry search response byte cap.", inv: "PLG2a" },
   { key: "plugins.installMaxBytes", area: "plugins", default: 100_000_000, unit: "bytes", class: "safety", action: "deny", min: 1, max: 16 * GIB, doc: "Plugin install payload byte cap.", inv: "PLG2b" },
   { key: "plugins.listPageDefault", area: "plugins", default: 20, unit: "count", class: "tunable", action: "warn", min: 1, max: 250, doc: "Plugin list default page size.", inv: "PLG3" },
