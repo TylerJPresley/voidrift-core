@@ -338,6 +338,28 @@ export async function previewInitReset(
   return new ConfigInit(new NodeInitFs(), voidriftConfigDir(), seedAgentsDir).previewReset(name);
 }
 
+/**
+ * Host-level pure helper: classify plugin agent templates against a project's
+ * existing agents directory (§13.9.1). Separate from I/O so callers (like the
+ * CLI) can decide whether to prompt the user: ask only when at least one template
+ * would be newly copied (toCopy is non-empty). Returns which templates should be
+ * copied, which are identical (no-op), and which must be kept (collision/validation/symlink).
+ * Host-level: no core, no model, no network.
+ */
+export async function classifyPluginAgentTemplates(
+  templates: import("./use-cases/config-init.js").PluginAgentTemplate[],
+  projectDir: string,
+): Promise<{
+  toCopy: import("./use-cases/config-init.js").PluginAgentTemplate[];
+  identical: string[];
+  kept: { name: string; reason: string }[];
+}> {
+  return new ConfigInit(new NodeInitFs(), voidriftConfigDir(), seedAgentsDir).classifyPluginAgentTemplates(
+    templates,
+    projectDir,
+  );
+}
+
 /** The valid `voidrift init --reset <name>` targets (`config` + seeded agents,
  * §13.9.1), for the CLI's unknown-name message. Host-level: no core. */
 export function initResetNames(): string[] {

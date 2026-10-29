@@ -19,6 +19,7 @@ export { createCore } from "./boot.js";
 export {
   initConfigHome,
   previewInitReset,
+  classifyPluginAgentTemplates,
   initResetNames,
   isFirstRun,
   voidriftConfigDir,

@@ -437,4 +437,191 @@ describe("config.init (§13.9.1)", () => {
     expect(r.ok && r.value.backupSet).toBeNull();
     expect(await fs.readFile(cfg, "utf8")).toBe(before); // byte-for-byte untouched
   });
+
+  // ── classifyPluginAgentTemplates (§13.9.1) ──────────────────────────────────
+  describe("classifyPluginAgentTemplates", () => {
+    let projectDir: string;
+    let agentsDir: string;
+
+    beforeEach(async () => {
+      projectDir = path.join(os.tmpdir(), `voidrift-test-classify-${Date.now()}`);
+      agentsDir = path.join(projectDir, ".voidrift", "agents");
+      await fs.mkdir(agentsDir, { recursive: true });
+    });
+
+    afterEach(async () => {
+      if (existsSync(projectDir)) await fs.rm(projectDir, { recursive: true });
+    });
+
+    it("classifyPluginAgentTemplates: absent templates → toCopy", async () => {
+      const pluginAgentsDir = path.join(os.tmpdir(), `plugin-agents-${Date.now()}`);
+      await fs.mkdir(path.join(pluginAgentsDir, "test-agent"), { recursive: true });
+      const agentJson = JSON.stringify({ name: "test-agent", description: "Test", kind: "worker", tools: [] });
+      const promptMd = "Test prompt\n";
+      await fs.writeFile(path.join(pluginAgentsDir, "test-agent", "agent.json"), agentJson);
+      await fs.writeFile(path.join(pluginAgentsDir, "test-agent", "prompt.md"), promptMd);
+
+      const templates = [{ pluginId: "test-plugin", dir: path.join(pluginAgentsDir, "test-agent"), name: "test-agent" }];
+      const result = await init.classifyPluginAgentTemplates(templates, projectDir);
+
+      expect(result.toCopy).toEqual(templates);
+      expect(result.identical).toEqual([]);
+      expect(result.kept).toEqual([]);
+
+      await fs.rm(pluginAgentsDir, { recursive: true });
+    });
+
+    it("classifyPluginAgentTemplates: byte-identical existing agent → identical", async () => {
+      const pluginAgentsDir = path.join(os.tmpdir(), `plugin-agents-identical-${Date.now()}`);
+      await fs.mkdir(path.join(pluginAgentsDir, "test-agent"), { recursive: true });
+      const agentJson = JSON.stringify({ name: "test-agent", description: "Test", kind: "worker", tools: [] });
+      const promptMd = "Test prompt\n";
+      await fs.writeFile(path.join(pluginAgentsDir, "test-agent", "agent.json"), agentJson);
+      await fs.writeFile(path.join(pluginAgentsDir, "test-agent", "prompt.md"), promptMd);
+
+      // Pre-create the same agent in the target location
+      await fs.mkdir(path.join(agentsDir, "test-agent"), { recursive: true });
+      await fs.writeFile(path.join(agentsDir, "test-agent", "agent.json"), agentJson);
+      await fs.writeFile(path.join(agentsDir, "test-agent", "prompt.md"), promptMd);
+
+      const templates = [{ pluginId: "test-plugin", dir: path.join(pluginAgentsDir, "test-agent"), name: "test-agent" }];
+      const result = await init.classifyPluginAgentTemplates(templates, projectDir);
+
+      expect(result.toCopy).toEqual([]);
+      expect(result.identical).toEqual(["test-agent"]);
+      expect(result.kept).toEqual([]);
+
+      await fs.rm(pluginAgentsDir, { recursive: true });
+    });
+
+    it("classifyPluginAgentTemplates: different existing agent → kept", async () => {
+      const pluginAgentsDir = path.join(os.tmpdir(), `plugin-agents-different-${Date.now()}`);
+      await fs.mkdir(path.join(pluginAgentsDir, "test-agent"), { recursive: true });
+      const agentJson = JSON.stringify({ name: "test-agent", description: "Test", kind: "worker", tools: [] });
+      const promptMd = "Test prompt\n";
+      await fs.writeFile(path.join(pluginAgentsDir, "test-agent", "agent.json"), agentJson);
+      await fs.writeFile(path.join(pluginAgentsDir, "test-agent", "prompt.md"), promptMd);
+
+      // Pre-create a DIFFERENT agent in the target location
+      await fs.mkdir(path.join(agentsDir, "test-agent"), { recursive: true });
+      await fs.writeFile(path.join(agentsDir, "test-agent", "agent.json"), JSON.stringify({ name: "test-agent", description: "Old", kind: "worker", tools: ["x"] }));
+      await fs.writeFile(path.join(agentsDir, "test-agent", "prompt.md"), "Different prompt\n");
+
+      const templates = [{ pluginId: "test-plugin", dir: path.join(pluginAgentsDir, "test-agent"), name: "test-agent" }];
+      const result = await init.classifyPluginAgentTemplates(templates, projectDir);
+
+      expect(result.toCopy).toEqual([]);
+      expect(result.identical).toEqual([]);
+      expect(result.kept).toHaveLength(1);
+      expect(result.kept[0]!.name).toBe("test-agent");
+      expect(result.kept[0]!.reason).toContain("already exists");
+
+      await fs.rm(pluginAgentsDir, { recursive: true });
+    });
+
+    it("classifyPluginAgentTemplates: invalid agent.json → kept", async () => {
+      const pluginAgentsDir = path.join(os.tmpdir(), `plugin-agents-invalid-${Date.now()}`);
+      await fs.mkdir(path.join(pluginAgentsDir, "test-agent"), { recursive: true });
+      const agentJson = "{ invalid json";
+      const promptMd = "Test prompt\n";
+      await fs.writeFile(path.join(pluginAgentsDir, "test-agent", "agent.json"), agentJson);
+      await fs.writeFile(path.join(pluginAgentsDir, "test-agent", "prompt.md"), promptMd);
+
+      const templates = [{ pluginId: "test-plugin", dir: path.join(pluginAgentsDir, "test-agent"), name: "test-agent" }];
+      const result = await init.classifyPluginAgentTemplates(templates, projectDir);
+
+      expect(result.toCopy).toEqual([]);
+      expect(result.identical).toEqual([]);
+      expect(result.kept).toHaveLength(1);
+      expect(result.kept[0]!.name).toBe("test-agent");
+      expect(result.kept[0]!.reason).toContain("invalid"); // generic check
+
+      await fs.rm(pluginAgentsDir, { recursive: true });
+    });
+
+    it("classifyPluginAgentTemplates: missing template files → kept", async () => {
+      const pluginAgentsDir = path.join(os.tmpdir(), `plugin-agents-missing-${Date.now()}`);
+      await fs.mkdir(path.join(pluginAgentsDir, "test-agent"), { recursive: true });
+      // Don't write the files
+
+      const templates = [{ pluginId: "test-plugin", dir: path.join(pluginAgentsDir, "test-agent"), name: "test-agent" }];
+      const result = await init.classifyPluginAgentTemplates(templates, projectDir);
+
+      expect(result.toCopy).toEqual([]);
+      expect(result.identical).toEqual([]);
+      expect(result.kept).toHaveLength(1);
+      expect(result.kept[0]!.name).toBe("test-agent");
+      expect(result.kept[0]!.reason).toContain("missing");
+
+      await fs.rm(pluginAgentsDir, { recursive: true });
+    });
+
+    it("classifyPluginAgentTemplates: mixed set (new, identical, different)", async () => {
+      // Template 1: new
+      const pluginAgentsDir = path.join(os.tmpdir(), `plugin-agents-mixed-${Date.now()}`);
+      await fs.mkdir(path.join(pluginAgentsDir, "new-agent"), { recursive: true });
+      const newJson = JSON.stringify({ name: "new-agent", description: "New", kind: "worker", tools: [] });
+      const newPrompt = "New\n";
+      await fs.writeFile(path.join(pluginAgentsDir, "new-agent", "agent.json"), newJson);
+      await fs.writeFile(path.join(pluginAgentsDir, "new-agent", "prompt.md"), newPrompt);
+
+      // Template 2: identical
+      await fs.mkdir(path.join(pluginAgentsDir, "identical-agent"), { recursive: true });
+      const idJson = JSON.stringify({ name: "identical-agent", description: "Identical", kind: "worker", tools: [] });
+      const idPrompt = "Identical\n";
+      await fs.writeFile(path.join(pluginAgentsDir, "identical-agent", "agent.json"), idJson);
+      await fs.writeFile(path.join(pluginAgentsDir, "identical-agent", "prompt.md"), idPrompt);
+      await fs.mkdir(path.join(agentsDir, "identical-agent"), { recursive: true });
+      await fs.writeFile(path.join(agentsDir, "identical-agent", "agent.json"), idJson);
+      await fs.writeFile(path.join(agentsDir, "identical-agent", "prompt.md"), idPrompt);
+
+      // Template 3: different
+      await fs.mkdir(path.join(pluginAgentsDir, "different-agent"), { recursive: true });
+      const diffJson = JSON.stringify({ name: "different-agent", description: "Different", kind: "worker", tools: [] });
+      const diffPrompt = "Different\n";
+      await fs.writeFile(path.join(pluginAgentsDir, "different-agent", "agent.json"), diffJson);
+      await fs.writeFile(path.join(pluginAgentsDir, "different-agent", "prompt.md"), diffPrompt);
+      await fs.mkdir(path.join(agentsDir, "different-agent"), { recursive: true });
+      await fs.writeFile(path.join(agentsDir, "different-agent", "agent.json"), JSON.stringify({ name: "different-agent", description: "Old", kind: "worker", tools: ["old"] }));
+      await fs.writeFile(path.join(agentsDir, "different-agent", "prompt.md"), "Old\n");
+
+      const templates = [
+        { pluginId: "test-plugin", dir: path.join(pluginAgentsDir, "new-agent"), name: "new-agent" },
+        { pluginId: "test-plugin", dir: path.join(pluginAgentsDir, "identical-agent"), name: "identical-agent" },
+        { pluginId: "test-plugin", dir: path.join(pluginAgentsDir, "different-agent"), name: "different-agent" },
+      ];
+      const result = await init.classifyPluginAgentTemplates(templates, projectDir);
+
+      expect(result.toCopy).toHaveLength(1);
+      expect(result.toCopy[0]!.name).toBe("new-agent");
+      expect(result.identical).toEqual(["identical-agent"]);
+      expect(result.kept).toHaveLength(1);
+      expect(result.kept[0]!.name).toBe("different-agent");
+
+      await fs.rm(pluginAgentsDir, { recursive: true });
+    });
+
+    it("seedPluginAgents' classification matches classifyPluginAgentTemplates (one source of truth)", async () => {
+      // Create template directory
+      const pluginAgentsDir = path.join(os.tmpdir(), `plugin-agents-verify-${Date.now()}`);
+      await fs.mkdir(path.join(pluginAgentsDir, "test-agent"), { recursive: true });
+      const agentJson = JSON.stringify({ name: "test-agent", description: "Test", kind: "worker", tools: [] });
+      const promptMd = "Test prompt\n";
+      await fs.writeFile(path.join(pluginAgentsDir, "test-agent", "agent.json"), agentJson);
+      await fs.writeFile(path.join(pluginAgentsDir, "test-agent", "prompt.md"), promptMd);
+
+      const templates = [{ pluginId: "test-plugin", dir: path.join(pluginAgentsDir, "test-agent"), name: "test-agent" }];
+
+      // Run seedPluginAgents via project init
+      await init.run({ scope: "project", dir: projectDir, pluginAgents: templates });
+
+      // After seedPluginAgents, the template should be seeded, and classify should show it as identical
+      const classifiedAfter = await init.classifyPluginAgentTemplates(templates, projectDir);
+      expect(classifiedAfter.identical).toEqual(["test-agent"]);
+      expect(classifiedAfter.toCopy).toEqual([]);
+      expect(classifiedAfter.kept).toEqual([]);
+
+      await fs.rm(pluginAgentsDir, { recursive: true });
+    });
+  });
 });

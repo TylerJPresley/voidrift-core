@@ -299,25 +299,29 @@ export class ConfigInit {
   }
 
   /**
-   * Seed plugin agent templates into a project's .voidrift/agents/ directory
-   * (§12.4, §13.9.1). For each enabled plugin template, copy the two files
-   * (agent.json, prompt.md) atomically. Skip (report `kept:`) on collision with
-   * existing agent, validation failure, or symlinked template file. Identical
-   * already-copied templates appear in neither seeded nor kept (no-op). Never
-   * overwrite existing agent directories.
+   * Classify plugin agent templates against the project's existing agents directory
+   * (§13.9.1): return which ones should be copied, which are identical (no-op), and
+   * which must be kept (collision/validation/symlink). Pure host helper, separate
+   * from I/O, so callers (CLI) can decide whether to ask.
+   *
+   * Returns:
+   * - `toCopy`: templates that would be newly copied (not identical, no collision)
+   * - `identical`: template names already on disk with identical content (no-op)
+   * - `kept`: templates to skip with reason (collision, validation, symlink, etc.)
    */
-  private async seedPluginAgents(
-    projectRoot: string,
+  async classifyPluginAgentTemplates(
     templates: PluginAgentTemplate[],
-    seeded: string[],
-    kept: { name: string; reason: string }[],
-  ): Promise<void> {
-    const agentsDir = path.join(projectRoot, "agents");
+    projectDir: string,
+  ): Promise<{ toCopy: PluginAgentTemplate[]; identical: string[]; kept: { name: string; reason: string }[] }> {
+    const agentsDir = path.join(projectDir, ".voidrift", "agents");
+    const toCopy: PluginAgentTemplate[] = [];
+    const identical: string[] = [];
+    const kept: { name: string; reason: string }[] = [];
+
     for (const template of templates) {
       const targetDir = path.join(agentsDir, template.name);
-      
+
       // Read the template files from the template directory
-      // template.dir is the template directory itself (e.g., <agents>/<name>)
       const agentJsonSrc = path.join(template.dir, "agent.json");
       const promptMdSrc = path.join(template.dir, "prompt.md");
 
@@ -337,29 +341,71 @@ export class ConfigInit {
       }
 
       // Check for existing directory FIRST (before validation)
-      // This way collisions report "already exists" not validation errors
       const existing = await this.fs.exists(targetDir);
       if (existing) {
         // If the directory exists, check if the content is identical (no-op case)
         const existingJsonContent = await this.fs.readFile(path.join(targetDir, "agent.json"));
         const existingPromptContent = await this.fs.readFile(path.join(targetDir, "prompt.md"));
-        
+
         if (existingJsonContent === agentJsonContent && existingPromptContent === promptMdContent) {
           // Identical content — this is a no-op (§13.9.1): appears in neither group
+          identical.push(template.name);
           continue;
         }
-        
+
         // Different existing agent — keep it with reason
         kept.push({ name: template.name, reason: "agent directory already exists" });
         continue;
       }
 
       // Validate agent.json with the same validator used for ordinary agents
-      // Only validate after checking for collisions so collision messages are "already exists"
       const agentValidator = this.createAgentValidator(template.name, promptMdContent);
       const validationError = agentValidator(agentJsonContent);
       if (validationError !== null) {
         kept.push({ name: template.name, reason: validationError });
+        continue;
+      }
+
+      // Pass validation and no collision: this template should be copied
+      toCopy.push(template);
+    }
+
+    return { toCopy, identical, kept };
+  }
+
+  /**
+   * Seed plugin agent templates into a project's .voidrift/agents/ directory
+   * (§12.4, §13.9.1). For each enabled plugin template, copy the two files
+   * (agent.json, prompt.md) atomically. Skip (report `kept:`) on collision with
+   * existing agent, validation failure, or symlinked template file. Identical
+   * already-copied templates appear in neither seeded nor kept (no-op). Never
+   * overwrite existing agent directories.
+   *
+   * Uses classifyPluginAgentTemplates to classify, then writes only the toCopy set.
+   */
+  private async seedPluginAgents(
+    projectRoot: string,
+    templates: PluginAgentTemplate[],
+    seeded: string[],
+    kept: { name: string; reason: string }[],
+  ): Promise<void> {
+    // projectRoot is actually .voidrift; get the workspace root for classifyPluginAgentTemplates
+    const workspaceRoot = path.dirname(projectRoot);
+    const classified = await this.classifyPluginAgentTemplates(templates, workspaceRoot);
+    const agentsDir = path.join(projectRoot, "agents");
+
+    for (const template of classified.toCopy) {
+      const targetDir = path.join(agentsDir, template.name);
+
+      const agentJsonSrc = path.join(template.dir, "agent.json");
+      const promptMdSrc = path.join(template.dir, "prompt.md");
+
+      const agentJsonContent = await this.fs.readFile(agentJsonSrc);
+      const promptMdContent = await this.fs.readFile(promptMdSrc);
+
+      if (agentJsonContent === null || promptMdContent === null) {
+        // Should not happen (already checked in classify), but be defensive
+        kept.push({ name: template.name, reason: "template files missing" });
         continue;
       }
 
@@ -379,6 +425,9 @@ export class ConfigInit {
         }
       }
     }
+
+    // Append the classified kept entries
+    kept.push(...classified.kept);
   }
 
   /** Create a validator for an agent manifest (used for both seeded and plugin templates). */
