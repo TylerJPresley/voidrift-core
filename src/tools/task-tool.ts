@@ -205,13 +205,12 @@ function reportStatusOf(status: WorkerInfo["status"]): ReportStatus {
 }
 
 /** Validate a batch as a whole BEFORE any dispatch (§7.2). Returns an error
- * message naming the problem, or null when the batch is valid. The batch cap is
- * `task.batchMax` (registry default when unspecified). */
-export function validateBatch(tasks: BatchTask[], validWorkers: Set<string>, batchMax = limitDefault("task.batchMax")): string | null {
+ * message naming the problem, or null when the batch is valid. The `task.batchMax`
+ * cap is NOT enforced here: it is a `warn`-class registry key (§13.11), so the
+ * caller reads its action via the LimitsPort — `warn` accepts the batch in full
+ * with one LIMIT_HIT, `deny` refuses at the bound with the same notice. */
+export function validateBatch(tasks: BatchTask[], validWorkers: Set<string>): string | null {
   if (tasks.length < 1) return "Error: a batch must hold at least one task.";
-  if (tasks.length > batchMax) {
-    return `Error: a batch holds at most ${batchMax} tasks (got ${tasks.length}).`;
-  }
   const ids = new Set<string>();
   for (const t of tasks) {
     if (!SLUG.test(t.id)) {
@@ -456,8 +455,17 @@ export function buildTaskTool(deps: TaskToolDeps): StructuredToolInterface {
 
       // ── BATCH form: validate the WHOLE batch before any dispatch (§7.2) ──────
       const tasks = parsed.value.tasks;
-      const bad = validateBatch(tasks, valid, deps.limits ? deps.limits.get("task.batchMax") : undefined);
+      const bad = validateBatch(tasks, valid);
       if (bad) return toError(bad);
+      // §13.11 `task.batchMax` — registered `warn`: a batch over the cap is
+      // ACCEPTED in full with ONE LIMIT_HIT naming the key; a configured
+      // `{action:"deny"}` refuses at the bound with the same notice. No port →
+      // warn default (accept).
+      const batchMax = deps.limits ? deps.limits.get("task.batchMax") : limitDefault("task.batchMax");
+      if (tasks.length > batchMax) {
+        const r = deps.limits?.hit("task.batchMax", tasks.length, { what: `batch of ${tasks.length} tasks over the cap`, ...scope });
+        if (r?.action === "deny") return toError(`Error: ${r.notice}`);
+      }
 
       const requests: DispatchRequest[] = [];
       for (const t of tasks) {

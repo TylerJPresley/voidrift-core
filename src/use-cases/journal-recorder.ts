@@ -86,6 +86,12 @@ export interface JournalRecorderDeps {
   /** Read an effective limit (§13.11); used for `journal.perTargetContentBytes`
    * (JRNL2). Optional: absent → the entity default. Read fresh each call. */
   getLimit?: (key: string) => number;
+  /** §13.11 (JRNL5) — fire ONE `LIMIT_HIT` per ENTRY-eviction event: the store
+   * has no limits-port seam (its deps are `{stateDir, getLimit}`), so the
+   * recorder owns the emit. Called once per `afterAppendRetention` pass that
+   * evicted at least one entry for the count cap; `observed` is the pre-eviction
+   * entry count. Absent (tests/older callers) → no event. */
+  onLimitHit?: (key: string, observed: number, what: string) => void;
   /** Read a target's actual content at flush time; absent disables the
    * flush-time re-read (the aggregator then uses the last-seen after bytes). */
   readTargetAtFlush?: FlushReader;
@@ -463,17 +469,38 @@ export class JournalRecorder {
   private async afterAppendRetention(req: { sessionId: string; turn: number }): Promise<void> {
     const pinned = this.pinnedShas(req.sessionId);
     const ret = await this.deps.store.enforceRetention(req.sessionId, pinned);
-    if (ret.evictedShas.length > 0) {
-      await this.appendSerialized(req.sessionId, (seq) => ({
-        seq,
-        time: new Date().toISOString(),
-        sessionId: req.sessionId,
-        turn: req.turn,
-        tool: "journal-retention",
-        call: { evictedBlobs: ret.evictedShas.length, affectedEntries: ret.blobsEvictedSeqs.length },
-        target: "",
-        result: { status: "ok", summary: `evicted ${ret.evictedShas.length} oldest blob(s) over retention cap` },
-      }));
+    const entriesEvicted = ret.entriesEvictedSeqs.length;
+    const blobsEvicted = ret.evictedShas.length;
+    if (entriesEvicted === 0 && blobsEvicted === 0) return;
+    // §13.11 (JRNL5) — ONE LIMIT_HIT per ENTRY-eviction event (the store has no
+    // limits-port seam). The count cap is `warn`: the oldest entries are dropped
+    // and the run continues; the event names the key so the shrink is visible.
+    if (entriesEvicted > 0) {
+      this.deps.onLimitHit?.(
+        "journal.maxEntries",
+        entriesEvicted,
+        `journal evicted ${entriesEvicted} oldest entr${entriesEvicted === 1 ? "y" : "ies"} over the entry cap`,
+      );
     }
+    // The `journal-retention` entry records what was evicted (blobs and/or the
+    // oldest entries, naming the evicted entry seqs) — §10.11.
+    const summaryParts: string[] = [];
+    if (blobsEvicted > 0) summaryParts.push(`${blobsEvicted} oldest blob(s)`);
+    if (entriesEvicted > 0) summaryParts.push(`${entriesEvicted} oldest entr${entriesEvicted === 1 ? "y" : "ies"}`);
+    await this.appendSerialized(req.sessionId, (seq) => ({
+      seq,
+      time: new Date().toISOString(),
+      sessionId: req.sessionId,
+      turn: req.turn,
+      tool: "journal-retention",
+      call: {
+        evictedBlobs: blobsEvicted,
+        affectedEntries: ret.blobsEvictedSeqs.length,
+        evictedEntries: entriesEvicted,
+        ...(entriesEvicted > 0 ? { evictedEntrySeqs: ret.entriesEvictedSeqs } : {}),
+      },
+      target: "",
+      result: { status: "ok", summary: `evicted ${summaryParts.join(" and ")} over retention cap` },
+    }));
   }
 }

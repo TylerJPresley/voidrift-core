@@ -336,17 +336,23 @@ export class Memory {
       ...(input.keywords ? { keywords: input.keywords.map(stripEntryText) } : {}),
     });
 
-    // §6.3 — bound check at write time for every bounded type; reject before any
-    // persist so the store never silently summarizes or drops.
+    // §6.3/§13.11 — bound check at write time for every bounded type. The
+    // `memory.entryChars` key is registered `warn`: an over-length entry is
+    // ACCEPTED in full with ONE LIMIT_HIT naming the key; a configured
+    // `{action:"deny"}` refuses before any persist with the same notice (the
+    // MEMORY_BOUND_EXCEEDED shape). No port wired → warn default (accept).
     if (ENTRY_BOUNDED_TYPES.has(entry.type)) {
-      const limit = this.deps.getBounds().entryChars;
+      const limit = this.deps.limits ? this.deps.limits.get("memory.entryChars") : this.deps.getBounds().entryChars;
       const size = entrySize(entry);
       if (size > limit) {
-        return err(
-          coreError(ErrorCode.MEMORY_BOUND_EXCEEDED, `entry ${entry.id} is ${size} chars, over the ${limit} limit`, {
-            details: { id: entry.id, size, limit } satisfies BoundExceeded,
-          }),
-        );
+        const r = this.deps.limits?.hit("memory.entryChars", size, { what: `memory entry ${entry.id} is ${size} chars, over the ${limit} limit` });
+        if (r?.action === "deny") {
+          return err(
+            coreError(ErrorCode.MEMORY_BOUND_EXCEEDED, r.notice, {
+              details: { id: entry.id, size, limit } satisfies BoundExceeded,
+            }),
+          );
+        }
       }
     }
 

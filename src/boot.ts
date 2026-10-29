@@ -150,6 +150,11 @@ export interface CoreOptions {
    * store under `<workspaceRoot>/.voidrift/journal/`. Tests pass the in-memory
    * store. */
   journalStore?: import("./entities/ports/journal-store.js").JournalStore;
+  /** §9.5 — inject the unattended-approval countdown timer seam
+   * (`limits.approval.autoDenySeconds`). Defaults to a real
+   * `setTimeout`/`clearTimeout`; a test passes a fake-clock driver so the
+   * countdown is deterministic and never sleeps for real. Test seam only. */
+  setApprovalTimer?: (ms: number, fire: () => void) => () => void;
   /** Inject the plugin registry client (§12.4.1); defaults to the fetch adapter.
    * Tests pass a fake so discovery runs with no network. */
   pluginRegistry?: import("./entities/ports/plugin-registry-port.js").PluginRegistryPort;
@@ -1187,6 +1192,10 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
     store: journalStore,
     getLevel: () => config.get().mutationLogLevel,
     getLimit: (key) => limits.get(key),
+    // §13.11 (JRNL5) — the journal store has no limits-port seam, so the recorder
+    // emits the ONE `LIMIT_HIT` per entry-eviction event through the live limits
+    // capability (which dedups per key per turn and emits the §14.6 event).
+    onLimitHit: (key, observed, what) => limits.hit(key, observed, { what }),
   });
 
   const makeEngine = (turnMetadata?: () => string[]): Engine => {
@@ -1351,7 +1360,7 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
   };
 
   // The VCS adapter owns the worktree lifecycle and the branch watch (§7.3).
-  const vcs = new VcsAdapter(workspaceRoot, emit, () => limits.get("worktree.includeCapBytes"));
+  const vcs = new VcsAdapter(workspaceRoot, emit, () => limits.get("worktree.includeCapBytes"), limits);
 
   // §10.12 — rollback: the move timeline + whole-tree snapshots. The METHOD is
   // fixed per process at first use: `git` when the workspace is a git repository
@@ -2308,6 +2317,7 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
     makeEngine,
     getLimit: (key) => limits.get(key),
     limitHit: (key, observed, session) => limits.hit(key, observed, session ? { session } : undefined).notice,
+    ...(opts.setApprovalTimer ? { setApprovalTimer: opts.setApprovalTimer } : {}),
     makeSubagents,
     ...(opts.startAgent ? { startAgent: opts.startAgent } : {}),
     ...(opts.startSessionApprovalMode ? { startSessionApprovalMode: opts.startSessionApprovalMode } : {}),

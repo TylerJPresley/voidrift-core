@@ -60,16 +60,30 @@ describe("task tool — brief limit (task.briefMaxChars, TASK1)", () => {
 });
 
 describe("task tool — batch cap (task.batchMax, TASK2)", () => {
-  it("default equals 8 and validateBatch respects an override", () => {
+  it("default equals 8 and validateBatch passes a valid batch", () => {
     expect(limitDefault("task.batchMax")).toBe(8);
     const tasks = Array.from({ length: 3 }, (_, i) => ({ id: `t${i}`, worker: "researcher", task: "x" }));
     const valid = new Set(["researcher"]);
-    expect(validateBatch(tasks, valid, 8)).toBeNull();
-    expect(validateBatch(tasks, valid, 2)).toMatch(/at most 2 tasks/);
+    expect(validateBatch(tasks, valid)).toBeNull();
   });
 
-  it("the bound tool rejects an over-override batch via the port", async () => {
-    const { limits } = limitsWith({ task: { batchMax: 1 } });
+  it("warn (the default action): an over-cap batch is ACCEPTED in full with one LIMIT_HIT", async () => {
+    const { limits, hits } = limitsWith({ task: { batchMax: 1 } });
+    const dispatch = vi.fn(async () => ({ fanoutId: "f", workers: [] }) as unknown as FanoutResult);
+    const t = buildTaskTool({ workers, dispatch, limits });
+    await invoke(t, { tasks: [
+      { id: "a", worker: "researcher", task: "x" },
+      { id: "b", worker: "researcher", task: "y" },
+    ] });
+    // Accepted in full: both tasks dispatched in ONE fan-out.
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    const reqs = (dispatch.mock.calls[0] as unknown[])[0] as Array<{ id: string }>;
+    expect(reqs.map((r) => r.id)).toEqual(["a", "b"]);
+    expect(hits.filter((h) => h.key === "task.batchMax").length).toBe(1);
+  });
+
+  it("deny (a configured action): an over-cap batch is REFUSED with the same notice, no dispatch", async () => {
+    const { limits, hits } = limitsWith({ task: { batchMax: { value: 1, action: "deny" } } });
     const dispatch = vi.fn(async () => ({ fanoutId: "f", workers: [] }) as unknown as FanoutResult);
     const t = buildTaskTool({ workers, dispatch, limits });
     const msg = await invoke(t, { tasks: [
@@ -77,7 +91,8 @@ describe("task tool — batch cap (task.batchMax, TASK2)", () => {
       { id: "b", worker: "researcher", task: "y" },
     ] });
     expect(dispatch).not.toHaveBeenCalled();
-    expect(String(msg.content)).toMatch(/at most 1 tasks/);
+    expect(String(msg.content)).toContain("limits.task.batchMax");
+    expect(hits.filter((h) => h.key === "task.batchMax").length).toBe(1);
   });
 });
 

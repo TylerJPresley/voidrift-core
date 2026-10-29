@@ -31,6 +31,7 @@
 import { lstatSync, readdirSync, readlinkSync, mkdirSync, copyFileSync, existsSync, chmodSync, realpathSync, type Stats } from "node:fs";
 import path from "node:path";
 import { limitDefault } from "../entities/limits.js";
+import type { LimitsPort } from "../entities/ports/limits-port.js";
 
 /** The per-worktree copy cap default (§7.3, §13.11 SNAP4): registry
  * `worktree.includeCapBytes` (1 GiB total). The caller passes the effective
@@ -82,6 +83,7 @@ export function copyIncludeList(
   entries: readonly string[],
   isTracked: (rel: string) => boolean,
   capBytes: number = WORKTREE_INCLUDE_CAP_BYTES,
+  limits?: LimitsPort,
 ): IncludeResult {
   const result: IncludeResult = { copied: [], skipped: [], totalBytes: 0, nestedGitSkipped: 0 };
   const realMainRoot = safeRealpath(mainRoot) ?? mainRoot;
@@ -109,6 +111,12 @@ export function copyIncludeList(
     // whole, in listed order (§7.3).
     const entryBytes = measureBytes(src, st);
     if (result.totalBytes + entryBytes > capBytes) {
+      // §13.11 (SNAP4, owner 2026-10-29) — `worktree.includeCapBytes` is `warn`:
+      // the over-cap entry is skipped WHOLE and the copy keeps going (never a
+      // refused worktree create). Emit exactly ONE `LIMIT_HIT` naming the key so
+      // the skip is discoverable; the port dedups per key per turn. `observed` is
+      // the byte total that WOULD have resulted from copying this entry.
+      limits?.hit("worktree.includeCapBytes", result.totalBytes + entryBytes, { what: "worktree include entry over the byte cap — skipped" });
       result.skipped.push({ path: rel, reason: "would exceed the worktree copy cap (worktree.includeCapBytes)" });
       continue;
     }

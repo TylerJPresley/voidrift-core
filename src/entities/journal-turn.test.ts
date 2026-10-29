@@ -336,7 +336,7 @@ class TinyBudgetJournalStore implements JournalStore {
   async enforceRetention(
     sessionId: string,
     pinnedShas?: ReadonlySet<string>,
-  ): Promise<{ evictedShas: string[]; blobsEvictedSeqs: number[] }> {
+  ): Promise<{ evictedShas: string[]; blobsEvictedSeqs: number[]; entriesEvictedSeqs: number[] }> {
     const entries = await this.inner.list(sessionId);
     const refs = new Map<string, Set<number>>();
     for (const e of entries) {
@@ -372,7 +372,7 @@ class TinyBudgetJournalStore implements JournalStore {
       total -= size;
       for (const seq of refs.get(sha) ?? []) evictedSeqs.add(seq);
     }
-    return { evictedShas, blobsEvictedSeqs: [...evictedSeqs] };
+    return { evictedShas, blobsEvictedSeqs: [...evictedSeqs], entriesEvictedSeqs: [] };
   }
 }
 

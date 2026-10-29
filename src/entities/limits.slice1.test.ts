@@ -12,8 +12,6 @@ describe("SLICE 1: limits action field", () => {
   it("deny limits match the approved table", () => {
     const denyKeys = LIMITS.filter((l) => l.action === "deny").map((l) => l.key);
     const expectedDeny = [
-      "toolRounds.recursionMargin",
-      "toolRounds.recursionFactor",
       "tools.webFetchBodyMaxBytes",
       "tools.webFetchMaxHops",
       "tools.webSearchBodyMaxBytes",
@@ -26,9 +24,6 @@ describe("SLICE 1: limits action field", () => {
       "lane.writeCallsPerTurn",
       "lane.distinctTargetsPerTurn",
       "lane.writeContextShare",
-      "lane.readCallsPerTurn",
-      "lane.readContextShare",
-      "worktree.includeCapBytes",
       "worktree.includeMaxEntries",
       "permissions.exactRememberMaxChars",
       "plugins.searchMaxBytes",
@@ -37,6 +32,20 @@ describe("SLICE 1: limits action field", () => {
 
     for (const key of expectedDeny) {
       expect(denyKeys).toContain(key);
+    }
+
+    // §13.11 owner 2026-10-29 — these five are `warn` (they do not break the
+    // run): the read lane and worktree-include emit one LIMIT_HIT and keep
+    // going; the recursion operands are derivation parameters.
+    const expectedWarn = [
+      "toolRounds.recursionMargin",
+      "toolRounds.recursionFactor",
+      "lane.readCallsPerTurn",
+      "lane.readContextShare",
+      "worktree.includeCapBytes",
+    ];
+    for (const key of expectedWarn) {
+      expect(denyKeys).not.toContain(key);
     }
   });
 });

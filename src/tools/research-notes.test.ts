@@ -114,13 +114,14 @@ describe("buildResearchNotesTool over a real temp workspace (§8.6)", () => {
     expect(await fs.readFile(path.join(ws, ".voidrift/research/area/deep/q.md"), "utf8")).toBe("x");
   });
 
-  it("caps content per call at 256 KB", async () => {
+  it("content over the per-call cap is ACCEPTED under warn (the default action)", async () => {
     const big = "x".repeat(MAX_NOTES_CONTENT_BYTES + 1);
     const r = await call(tool, { path: ".voidrift/research/big.md", content: big });
-    expect(r).toMatch(/content too large/);
+    expect(JSON.parse(r).mode).toBe("create");
+    expect(await fs.readFile(path.join(ws, ".voidrift/research/big.md"), "utf8")).toBe(big);
   });
 
-  it("caps a file at 5 MB after append", async () => {
+  it("a file over the per-file cap after append is ACCEPTED under warn (the default action)", async () => {
     // Seed just under the per-file cap with repeated appends under the per-call cap.
     const chunk = "x".repeat(MAX_NOTES_CONTENT_BYTES);
     const chunks = Math.ceil(MAX_NOTES_FILE_BYTES / MAX_NOTES_CONTENT_BYTES);
@@ -128,7 +129,7 @@ describe("buildResearchNotesTool over a real temp workspace (§8.6)", () => {
       await call(tool, { path: ".voidrift/research/grow.md", content: chunk, mode: "append" });
     }
     const r = await call(tool, { path: ".voidrift/research/grow.md", content: "more", mode: "append" });
-    expect(r).toMatch(/file too large after append/);
+    expect(JSON.parse(r).mode).toBe("append");
   });
 
   it("refuses an empty findings list, naming the config key", async () => {
@@ -320,7 +321,7 @@ describe("researcher_save_notes — limits registry (§13.11 NOTE1)", () => {
     expect(MAX_NOTES_CONTENT_BYTES).toBe(256 * 1024);
   });
 
-  it("a configured limits.tools.notesContentMaxBytes lowers the cap and emits one LIMIT_HIT", async () => {
+  it("a configured limits.tools.notesContentMaxBytes (warn) ACCEPTS the write in full and emits one LIMIT_HIT", async () => {
     const { EventBus } = await import("../entities/event-bus.js");
     const { resolveLimits } = await import("../entities/limits-resolve.js");
     const { LimitsCapability } = await import("../use-cases/limits-capability.js");
@@ -333,8 +334,9 @@ describe("researcher_save_notes — limits registry (§13.11 NOTE1)", () => {
       const limits = new LimitsCapability(resolveLimits([{ layer: "project", limits: { tools: { notesContentMaxBytes: 10 } } }]), bus);
       const tool = buildResearchNotesTool({ fs: adapter, getFindingsDirectories: () => [...FINDINGS], limits });
       const r = (await tool.invoke({ path: ".voidrift/research/q.md", content: "x".repeat(50) })) as string;
-      expect(r).toMatch(/content too large .*max 10/);
-      expect(hits.some((h) => h.key === "tools.notesContentMaxBytes")).toBe(true);
+      expect(JSON.parse(r).mode).toBe("create");
+      expect(await fs.readFile(path.join(ws, ".voidrift/research/q.md"), "utf8")).toBe("x".repeat(50));
+      expect(hits.filter((h) => h.key === "tools.notesContentMaxBytes").length).toBe(1);
     } finally {
       await fs.rm(ws, { recursive: true, force: true });
     }

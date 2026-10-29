@@ -79,8 +79,19 @@ export class InMemoryJournalStore implements JournalStore {
   async enforceRetention(
     sessionId: string,
     pinnedShas?: ReadonlySet<string>,
-  ): Promise<{ evictedShas: string[]; blobsEvictedSeqs: number[] }> {
+  ): Promise<{ evictedShas: string[]; blobsEvictedSeqs: number[]; entriesEvictedSeqs: number[] }> {
     const s = this.state(sessionId);
+    // §13.11 (JRNL5) — parity with the fs store: evict the OLDEST entries first
+    // once the count exceeds the effective `journal.maxEntries`.
+    const maxEntries = this.getLimit?.("journal.maxEntries") ?? JOURNAL_LIMITS.maxEntries;
+    const entriesEvictedSeqs: number[] = [];
+    if (s.entries.length > maxEntries) {
+      const sorted = [...s.entries].sort((a, b) => a.seq - b.seq);
+      const dropCount = sorted.length - maxEntries;
+      for (const e of sorted.slice(0, dropCount)) entriesEvictedSeqs.push(e.seq);
+      const drop = new Set(entriesEvictedSeqs);
+      s.entries = s.entries.filter((e) => !drop.has(e.seq));
+    }
     // Build live references: sha → entry seqs that reference it.
     const refs = new Map<string, Set<number>>();
     for (const e of s.entries) {
@@ -103,9 +114,6 @@ export class InMemoryJournalStore implements JournalStore {
     for (const e of s.entries) {
       if (plan.evictedEntrySeqs.has(e.seq)) e.blobsEvicted = true;
     }
-    // §13.11 (JRNL5) — the entry-count cap is sourced from the registry; today's
-    // behaviour is a no-op on entries (never deleted for the count cap, §10.11).
-    void (this.getLimit?.("journal.maxEntries") ?? JOURNAL_LIMITS.maxEntries);
-    return { evictedShas: plan.evictShas, blobsEvictedSeqs: [...plan.evictedEntrySeqs] };
+    return { evictedShas: plan.evictShas, blobsEvictedSeqs: [...plan.evictedEntrySeqs], entriesEvictedSeqs };
   }
 }

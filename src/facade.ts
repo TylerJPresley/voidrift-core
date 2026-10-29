@@ -215,6 +215,14 @@ export interface FacadeDeps {
    * Returns the one-line notice. Optional: absent in tests. */
   limitHit?: (key: string, observed?: number, session?: string) => string;
   /**
+   * §9.5 — the unattended-approval countdown timer seam. Schedules `fire` after
+   * `ms` and returns a cancel function. The interactive confirm loop uses it to
+   * race an `onApproval` wait against the `limits.approval.autoDenySeconds`
+   * countdown WITHOUT a real sleep in tests: a fake clock drives `fire`
+   * deterministically. Defaults to `setTimeout`/`clearTimeout` (boot). Absent in
+   * a pure in-memory test → the real-timer default is used. */
+  setApprovalTimer?: (ms: number, fire: () => void) => () => void;
+  /**
    * Resolve the session's active top-level agent definition by name (§2.7),
    * supplied by the facade from the shared Subagents registry. The engine and
    * every worker read it LIVE to drive the prompt overlay, the bound tool set,
@@ -338,6 +346,16 @@ export interface FacadeDeps {
 
 function newId(): string {
   return randomBytes(4).toString("hex");
+}
+
+/** §9.5 — the default unattended-approval countdown timer: a real
+ * `setTimeout`/`clearTimeout`. Injected via `FacadeDeps.setApprovalTimer` so a
+ * test drives the countdown with a fake clock and never sleeps for real. The
+ * timer is `unref`'d so a pending countdown never keeps the process alive. */
+function defaultApprovalTimer(ms: number, fire: () => void): () => void {
+  const t = setTimeout(fire, ms);
+  (t as { unref?: () => void }).unref?.();
+  return () => clearTimeout(t);
 }
 
 function toInfo(m: SessionMetadata): SessionInfo {
@@ -880,17 +898,50 @@ export class CoreAPI {
             break;
           }
           const cancelledMarker = Symbol("cancelled");
+          const autoDeniedMarker = Symbol("auto-denied");
+          // §9.5 — the unattended-approval countdown. When
+          // `limits.approval.autoDenySeconds` is non-zero, a pending interactive
+          // prompt left unanswered past the countdown AUTO-DENIES (deny-and-
+          // continue, the same fail-closed outcome as a reject), recorded in the
+          // trail as PERMISSION_RESOLVED `decision: "reject"` by `engine.confirm`.
+          // The default `0` disables it and the ask waits (or the
+          // `permissionsApprovalTimeoutMs` seam governs). The countdown is armed
+          // PER prompt and cancelled the moment a human answers or the turn is
+          // cancelled, so it never fires against an answered or abandoned ask.
+          const autoDenySeconds = this.deps.getLimit?.("approval.autoDenySeconds") ?? 0;
+          const setTimer = this.deps.setApprovalTimer ?? defaultApprovalTimer;
+          let cancelAutoDeny: (() => void) | undefined;
+          const autoDenyRace =
+            autoDenySeconds > 0
+              ? new Promise<typeof autoDeniedMarker>((r) => {
+                  cancelAutoDeny = setTimer(autoDenySeconds * 1000, () => r(autoDeniedMarker));
+                })
+              : null;
           const raced = await Promise.race([
             this.deps.onApproval(result.pending[0]!),
             new Promise<typeof cancelledMarker>((r) => {
               if (turnAbort.signal.aborted) return r(cancelledMarker);
               turnAbort.signal.addEventListener("abort", () => r(cancelledMarker), { once: true });
             }),
+            ...(autoDenyRace ? [autoDenyRace] : []),
           ]);
+          // A human answered or the turn was cancelled first: cancel the pending
+          // countdown so a late fire never resolves a settled race.
+          cancelAutoDeny?.();
           if (raced === cancelledMarker) {
             result = { status: "cancelled", text: "", toolsUsed: [], model: result.model, usage: result.usage, pending: [] };
             session.pending = [];
             break;
+          }
+          if (raced === autoDeniedMarker) {
+            // §9.5 — auto-deny: confirm the pending ask as a REJECT (the normal
+            // denial event) so the turn continues exactly as on a human reject.
+            result = await engine.confirm(
+              session,
+              { requestId: result.pending[0]!.id, decision: "reject" },
+              turnAbort.signal,
+            );
+            continue;
           }
           result = await engine.confirm(session, raced, turnAbort.signal);
         }

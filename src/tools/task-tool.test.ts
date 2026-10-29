@@ -9,6 +9,9 @@ import type { ToolMessage } from "@langchain/core/messages";
 import { toJsonSchema } from "@langchain/core/utils/json_schema";
 import { buildTaskTool, taskDescription, TASK_SCHEMA, type DispatchableWorker } from "./task-tool.js";
 import type { FanoutResult } from "../use-cases/subagents.js";
+import { EventBus } from "../entities/event-bus.js";
+import { resolveLimits } from "../entities/limits-resolve.js";
+import { LimitsCapability } from "../use-cases/limits-capability.js";
 
 const workers: DispatchableWorker[] = [
   { name: "researcher", description: "Read-only investigation." },
@@ -214,11 +217,25 @@ describe("task tool — batch validation rejects BEFORE any dispatch (§7.2)", (
     expect(String(msg.content)).toMatch(/cycle/i);
   });
 
-  it("rejects an over-cap (9-task) batch with zero dispatch", async () => {
+  it("accepts an over-cap (9-task) batch in full and emits one warn LIMIT_HIT (task.batchMax)", async () => {
+    // Default action is warn (owner decision): the batch is dispatched in full
+    // and ONE LIMIT_HIT naming task.batchMax is emitted. (deny is covered in
+    // task-tool-limits.test.ts.)
+    const bus = new EventBus();
+    const hits: { key: string; action?: string }[] = [];
+    bus.subscribe("LIMIT_HIT", (e) => hits.push(e.payload as { key: string; action?: string }));
+    const limits = new LimitsCapability(resolveLimits([]), bus);
+    const dispatch = vi.fn(async (_reqs: unknown[]) => ({ fanoutId: "f", workers: [] }) as unknown as FanoutResult);
+    const t = buildTaskTool({ workers, dispatch, limits });
     const tasks = Array.from({ length: 9 }, (_, i) => ({ id: `t${i}`, worker: "researcher", task: "x" }));
-    const { msg, dispatch } = await invokeBatch(tasks);
-    expect(dispatch).not.toHaveBeenCalled();
-    expect(String(msg.content)).toMatch(/at most 8 tasks/i);
+    await invoke(t, { tasks });
+    // Accepted in full: all 9 dispatched in ONE fan-out.
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    const reqs = (dispatch.mock.calls[0] as unknown[])[0] as Array<{ id: string }>;
+    expect(reqs.map((r) => r.id)).toEqual(tasks.map((t) => t.id));
+    const batchHits = hits.filter((h) => h.key === "task.batchMax");
+    expect(batchHits.length).toBe(1);
+    expect(batchHits[0]!.action).toBe("warn");
   });
 
   it("rejects a non-slug id with zero dispatch", async () => {

@@ -48,9 +48,12 @@ export interface JournalStore {
   /**
    * Enforce retention for a session (§10.11): evict oldest blobs first until
    * blob bytes are within `JOURNAL_LIMITS.maxBlobBytes`, mark affected entries
-   * `blobsEvicted`, and when the entry count exceeds `maxEntries` note it. A
-   * `journal-retention` metadata entry recording what was evicted is appended by
-   * the caller. Returns the evicted blob shas and affected entry seqs.
+   * `blobsEvicted`, AND evict the oldest ENTRIES first once the entry count
+   * exceeds the effective `journal.maxEntries` (an atomic temp+rename rewrite
+   * that fails closed — on any failure the original log is left intact and the
+   * error surfaces). A `journal-retention` metadata entry recording what was
+   * evicted is appended by the caller. Returns the evicted blob shas, the entry
+   * seqs whose blob was evicted, and the entry seqs EVICTED for the count cap.
    *
    * `pinnedShas` are blobs the LIVE turn aggregator still holds (a first-before
    * or pending-after) with no referencing `turn-net` entry yet; they are NEVER
@@ -59,5 +62,5 @@ export interface JournalStore {
   enforceRetention(
     sessionId: string,
     pinnedShas?: ReadonlySet<string>,
-  ): Promise<{ evictedShas: string[]; blobsEvictedSeqs: number[] }>;
+  ): Promise<{ evictedShas: string[]; blobsEvictedSeqs: number[]; entriesEvictedSeqs: number[] }>;
 }

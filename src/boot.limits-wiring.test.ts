@@ -117,7 +117,7 @@ describe("boot limits wiring — tools reach the injected LimitsCapability (§13
     expect(hits.length).toBe(0);
   });
 
-  it("a project limits.tools.notesContentMaxBytes override refuses a large note and emits LIMIT_HIT", async () => {
+  it("a project limits.tools.notesContentMaxBytes override (warn) ACCEPTS a large note in full and emits LIMIT_HIT", async () => {
     const model = new OneCallModel({
       name: "researcher_save_notes",
       args: { path: ".voidrift/research/note.md", content: "y".repeat(400), mode: "create" },
@@ -138,8 +138,8 @@ describe("boot limits wiring — tools reach the injected LimitsCapability (§13
     const hit = hits.find((h) => h.key === "tools.notesContentMaxBytes");
     expect(hit, "LIMIT_HIT for the notes-content cap should fire through boot").toBeDefined();
     expect(hit?.value).toBe(50);
-    // The note was refused (not written) — the cap took real effect.
+    // warn accepts in full — the note WAS written despite exceeding the cap.
     const wrote = await fs.readFile(path.join(ws, ".voidrift/research/note.md"), "utf8").then(() => true).catch(() => false);
-    expect(wrote).toBe(false);
+    expect(wrote).toBe(true);
   });
 });

@@ -106,16 +106,16 @@ export const LIMITS: readonly LimitSpec[] = [
   { key: "turn.shutdownGraceMs", area: "turn", default: 5000, unit: "ms", class: "tunable", action: "warn", min: 0, max: 600_000, doc: "Grace period before a hard turn shutdown.", inv: "CTX20", alias: "turnShutdownGraceMs" },
 
   // --- toolRounds (A, §3.3/§3.6) ---
-  { key: "toolRounds.recursionMargin", area: "toolRounds", default: 5, unit: "count", class: "tunable", action: "deny", min: 0, max: 1000, doc: "Additive margin in the derived LangGraph recursion limit (2*rounds + margin).", inv: "CTX14a" },
-  { key: "toolRounds.recursionFactor", area: "toolRounds", default: 2, unit: "count", class: "tunable", action: "deny", min: 1, max: 100, doc: "Multiplier on rounds in the derived LangGraph recursion limit (factor*rounds + margin).", inv: "CTX14b" },
+  { key: "toolRounds.recursionMargin", area: "toolRounds", default: 5, unit: "count", class: "tunable", action: "warn", min: 0, max: 1000, doc: "Additive margin in the derived LangGraph recursion limit (2*rounds + margin).", inv: "CTX14a" },
+  { key: "toolRounds.recursionFactor", area: "toolRounds", default: 2, unit: "count", class: "tunable", action: "warn", min: 1, max: 100, doc: "Multiplier on rounds in the derived LangGraph recursion limit (factor*rounds + margin).", inv: "CTX14b" },
   { key: "toolRounds.wrapUpRatio", area: "toolRounds", default: 0.8, unit: "ratio", class: "tunable", action: "warn", min: 0, max: 1, doc: "Fraction of the tool-round budget at which the wrap-up note is appended.", inv: "CTX13a" },
 
   // --- lane (B) ---
   { key: "lane.writeCallsPerTurn", area: "lane", default: 8, unit: "count", class: "tunable", action: "deny", min: 1, max: 1000, doc: "Direct write calls a delegating top-level agent may make per turn.", inv: "LANE1" },
   { key: "lane.distinctTargetsPerTurn", area: "lane", default: 5, unit: "count", class: "tunable", action: "deny", min: 1, max: 1000, doc: "Distinct direct write targets per turn.", inv: "LANE2" },
   { key: "lane.writeContextShare", area: "lane", default: 0.35, unit: "ratio", class: "tunable", action: "deny", min: 0, max: 1, doc: "Write-lane tool-result share of the context window before blocking.", inv: "LANE3" },
-  { key: "lane.readCallsPerTurn", area: "lane", default: 8, unit: "count", class: "tunable", action: "deny", min: 1, max: 1000, doc: "Direct read calls per turn before the read-lane nudge.", inv: "LANE4" },
-  { key: "lane.readContextShare", area: "lane", default: 0.25, unit: "ratio", class: "tunable", action: "deny", min: 0, max: 1, doc: "Read-lane tool-result share of the context window before the nudge.", inv: "LANE5" },
+  { key: "lane.readCallsPerTurn", area: "lane", default: 8, unit: "count", class: "tunable", action: "warn", min: 1, max: 1000, doc: "Direct read calls per turn before the read-lane nudge.", inv: "LANE4" },
+  { key: "lane.readContextShare", area: "lane", default: 0.25, unit: "ratio", class: "tunable", action: "warn", min: 0, max: 1, doc: "Read-lane tool-result share of the context window before the nudge.", inv: "LANE5" },
 
   // --- tools (C) ---
   { key: "tools.workspaceMaxFiles", area: "tools", default: 20000, unit: "count", class: "tunable", action: "warn", min: 1, max: 10_000_000, doc: "Max files enumerated in the workspace surface.", inv: "TOOL3" },
@@ -205,7 +205,7 @@ export const LIMITS: readonly LimitSpec[] = [
   { key: "rollback.cachePerFileBytes", area: "rollback", default: 5 * MIB, unit: "bytes", class: "integrity", action: "warn", min: 1, max: 1 * GIB, doc: "Cache snapshot: per-file byte cap (lowering drops files from a restore).", inv: "SNAP1a" },
   { key: "rollback.cacheSessionBytes", area: "rollback", default: 256 * MIB, unit: "bytes", class: "integrity", action: "warn", min: 1, max: 16 * GIB, doc: "Cache snapshot: per-session byte cap (lowering drops a restore's completeness).", inv: "SNAP1b" },
   { key: "rollback.gitCaptureTimeoutMs", area: "rollback", default: 20_000, unit: "ms", class: "tunable", action: "warn", min: 1, max: 600_000, doc: "Git snapshot capture timeout.", inv: "SNAP2" },
-  { key: "worktree.includeCapBytes", area: "worktree", default: 1 * GIB, unit: "bytes", class: "safety", action: "deny", min: 1, max: 1024 * GIB, doc: "Worktree include total byte cap (DoS bound).", inv: "SNAP4" },
+  { key: "worktree.includeCapBytes", area: "worktree", default: 1 * GIB, unit: "bytes", class: "safety", action: "warn", min: 1, max: 1024 * GIB, doc: "Worktree include total byte cap (DoS bound).", inv: "SNAP4" },
   { key: "worktree.includeMaxEntries", area: "worktree", default: 64, unit: "count", class: "safety", action: "deny", min: 1, max: 10_000, doc: "Max worktree-include entries per layer.", inv: "SNAP5", schemaTimeOnly: "enforced at config-validation time by WORKTREE_INCLUDE_MAX_ENTRIES in config/schema.ts, before the limits capability exists" },
   { key: "journal.perTargetContentBytes", area: "journal", default: 1 * MIB, unit: "bytes", class: "integrity", action: "warn", min: 1, max: 1 * GIB, doc: "Journal: per-target captured content byte cap (lowering weakens the audit record).", inv: "JRNL2" },
   { key: "journal.maxBlobBytes", area: "journal", default: 512 * MIB, unit: "bytes", class: "integrity", action: "warn", min: 1, max: 16 * GIB, doc: "Journal: max blob byte cap (lowering weakens the audit record).", inv: "JRNL3" },

@@ -196,12 +196,21 @@ export class FilesystemJournalStore implements JournalStore {
   async enforceRetention(
     sessionId: string,
     pinnedShas?: ReadonlySet<string>,
-  ): Promise<{ evictedShas: string[]; blobsEvictedSeqs: number[] }> {
+  ): Promise<{ evictedShas: string[]; blobsEvictedSeqs: number[]; entriesEvictedSeqs: number[] }> {
     const dir = this.blobsDir(sessionId);
-    if (!existsSync(dir)) return { evictedShas: [], blobsEvictedSeqs: [] };
     const entries = this.readEntries(sessionId);
+    // §13.11 (JRNL5) — evict the OLDEST ENTRIES first once the count exceeds the
+    // effective `journal.maxEntries`. The log is rewritten atomically (temp +
+    // rename) and FAIL CLOSED: on any failure the original log is left intact and
+    // the error surfaces exactly as a blob eviction failure does.
+    const maxEntries = this.deps.getLimit?.("journal.maxEntries") ?? JOURNAL_LIMITS.maxEntries;
+    const entriesEvictedSeqs = this.evictOldestEntries(sessionId, entries, maxEntries);
+    if (!existsSync(dir)) return { evictedShas: [], blobsEvictedSeqs: [], entriesEvictedSeqs };
+    // Re-read after a possible entry eviction so blob references reflect the
+    // retained set (an evicted entry no longer pins its blobs).
+    const liveEntries = entriesEvictedSeqs.length > 0 ? this.readEntries(sessionId) : entries;
     const refs = new Map<string, Set<number>>();
-    for (const e of entries) {
+    for (const e of liveEntries) {
       for (const sha of [e.blobs?.before, e.blobs?.after]) {
         if (!sha) continue;
         if (!refs.has(sha)) refs.set(sha, new Set());
@@ -233,9 +242,47 @@ export class FilesystemJournalStore implements JournalStore {
         /* best-effort */
       }
     }
-    // §13.11 (JRNL5) — the entry-count cap is sourced from the registry; today's
-    // behaviour is a no-op on entries (never deleted for the count cap, §10.11).
-    void (this.deps.getLimit?.("journal.maxEntries") ?? JOURNAL_LIMITS.maxEntries);
-    return { evictedShas: plan.evictShas, blobsEvictedSeqs: [...plan.evictedEntrySeqs] };
+    return { evictedShas: plan.evictShas, blobsEvictedSeqs: [...plan.evictedEntrySeqs], entriesEvictedSeqs };
+  }
+
+  /**
+   * Evict the OLDEST entries past the effective count cap (§10.11, JRNL5), oldest
+   * first (lowest seq). The kept tail is rewritten to a temp file in the SAME
+   * directory, fsync'd, then atomically renamed over the live log — so a crash
+   * between the temp write and the rename leaves the ORIGINAL log intact (fail
+   * closed). Returns the evicted entry seqs (empty when at or below the cap).
+   */
+  private evictOldestEntries(sessionId: string, entries: JournalEntry[], maxEntries: number): number[] {
+    if (entries.length <= maxEntries) return [];
+    const sorted = [...entries].sort((a, b) => a.seq - b.seq);
+    const dropCount = sorted.length - maxEntries;
+    const evicted = sorted.slice(0, dropCount);
+    const kept = sorted.slice(dropCount);
+    const file = this.entriesPath(sessionId);
+    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+    const body = kept.map((e) => JSON.stringify(e)).join("\n") + (kept.length > 0 ? "\n" : "");
+    // Write the temp, fsync it, then atomically rename over the live log. A
+    // failure before the rename leaves the original untouched; the error
+    // surfaces (never swallowed) — the SAME fail-closed contract blob eviction
+    // follows for an unrecoverable I/O failure.
+    const fd = openSync(tmp, "w", FILE_MODE);
+    try {
+      writeSync(fd, body);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, file);
+    try {
+      const dfd = openSync(this.sessionDir(sessionId), "r");
+      try {
+        fsyncSync(dfd);
+      } finally {
+        closeSync(dfd);
+      }
+    } catch {
+      /* directory fsync is best-effort on platforms that disallow it */
+    }
+    return evicted.map((e) => e.seq);
   }
 }

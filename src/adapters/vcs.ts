@@ -17,6 +17,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import chokidar, { type FSWatcher } from "chokidar";
 import type { MergeResult, VcsPort, Worktree } from "../entities/ports/vcs-port.js";
+import type { LimitsPort } from "../entities/ports/limits-port.js";
 import { dirSizeBytes } from "./fs-purge.js";
 import { copyIncludeList } from "./worktree-include.js";
 import {
@@ -65,6 +66,10 @@ export class VcsAdapter implements VcsPort {
     /** §13.11 SNAP4 — the effective (cascaded) `worktree.includeCapBytes`; when
      * absent the worktree-include helper uses the registry default. */
     private readonly getIncludeCapBytes?: () => number,
+    /** §13.11 (SNAP4, §7.3) — the runtime limits port so the include-list copier
+     * can emit ONE `LIMIT_HIT('worktree.includeCapBytes')` when it skips an
+     * over-cap entry. Absent (older callers/tests) → no hit is emitted. */
+    private readonly limits?: LimitsPort,
   ) {}
 
   // ── git plumbing ─────────────────────────────────────────────────────────
@@ -222,7 +227,7 @@ export class VcsAdapter implements VcsPort {
       for (const t of tracked) if (t.startsWith(prefix)) return true;
       return false;
     };
-    const result = copyIncludeList(this.root, worktreeRoot, include, isTracked, this.getIncludeCapBytes?.());
+    const result = copyIncludeList(this.root, worktreeRoot, include, isTracked, this.getIncludeCapBytes?.(), this.limits);
     for (const skip of result.skipped) {
       this.emit("WORKTREE_INCLUDE_SKIPPED", {
         worktree: id,

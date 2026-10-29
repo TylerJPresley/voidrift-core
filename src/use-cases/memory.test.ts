@@ -72,15 +72,11 @@ describe("§6.3/§6.4 — verified writes and bounds", () => {
     expect(events.filter((e) => e.type === "MEMORY_SAVED")).toHaveLength(1);
   });
 
-  it("a write one char over the bound is rejected MEMORY_BOUND_EXCEEDED and emits no event", async () => {
+  it("a write one char over the bound is ACCEPTED under warn (the default action) and emits MEMORY_SAVED", async () => {
     const { memory, events } = harness({ entryChars: 2200 });
     const res = await memory.write({ title: "Prefs", type: "user-model", scope: "workspace", body: "x".repeat(2201) });
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expect(res.error.code).toBe("MEMORY_BOUND_EXCEEDED");
-      expect(res.error.details).toMatchObject({ size: 2201, limit: 2200 });
-    }
-    expect(events.filter((e) => e.type === "MEMORY_SAVED")).toHaveLength(0);
+    expect(res.ok).toBe(true);
+    expect(events.filter((e) => e.type === "MEMORY_SAVED")).toHaveLength(1);
   });
 
   it("identity is uncapped", async () => {

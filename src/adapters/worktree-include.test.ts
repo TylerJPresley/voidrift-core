@@ -16,6 +16,9 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import { VcsAdapter } from "./vcs.js";
 import { copyIncludeList, WORKTREE_INCLUDE_CAP_BYTES } from "./worktree-include.js";
+import { EventBus } from "../entities/event-bus.js";
+import { resolveLimits } from "../entities/limits-resolve.js";
+import { LimitsCapability } from "../use-cases/limits-capability.js";
 
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8" });
@@ -162,6 +165,48 @@ describe("VcsAdapter — worktreeInclude copy at creation (§7.3)", () => {
     const res = copyIncludeList(root, wt.path, ["a.bin", "b.bin"], () => false, 150);
     expect(res.copied.map((c) => c.path)).toEqual(["a.bin"]);
     expect(res.skipped.find((s) => s.path === "b.bin")?.reason).toMatch(/worktree copy cap/);
+  });
+
+  it("SNAP4: the real vcs adapter wires the limits port — an over-cap entry is skipped and fires ONE LIMIT_HIT", async () => {
+    // Given a real repo with an untracked file over a TINY effective cap, and a
+    // real LimitsCapability built from a project override (so the adapter's
+    // getIncludeCapBytes AND the LimitsPort both reflect it).
+    fs.writeFileSync(path.join(root, "a.bin"), "x".repeat(100));
+    fs.writeFileSync(path.join(root, "big.bin"), "y".repeat(500));
+    const bus = new EventBus();
+    const hits: { key: string; observed?: number }[] = [];
+    bus.subscribe("LIMIT_HIT", (e) => hits.push(e.payload as { key: string; observed?: number }));
+    const limits = new LimitsCapability(
+      resolveLimits([{ layer: "project", limits: { worktree: { includeCapBytes: 150 } } }]),
+      bus,
+      { workspace: root },
+    );
+    // When a worktree is created through the real adapter wired exactly as boot.ts
+    // wires it (getIncludeCapBytes + the limits port).
+    const vcs = new VcsAdapter(root, () => {}, () => limits.get("worktree.includeCapBytes"), limits);
+    const wt = await vcs.createWorktree("wcap", undefined, ["a.bin", "big.bin"]);
+
+    // Then the first entry copied, the over-cap one skipped WHOLE, and exactly
+    // ONE LIMIT_HIT named the key.
+    expect(fs.existsSync(path.join(wt.path, "a.bin"))).toBe(true);
+    expect(fs.existsSync(path.join(wt.path, "big.bin"))).toBe(false);
+    expect(hits.filter((h) => h.key === "worktree.includeCapBytes").length).toBe(1);
+  });
+
+  it("SNAP4: no LIMIT_HIT when every entry fits under the effective cap", async () => {
+    fs.writeFileSync(path.join(root, "a.bin"), "x".repeat(100));
+    const bus = new EventBus();
+    const hits: { key: string }[] = [];
+    bus.subscribe("LIMIT_HIT", (e) => hits.push(e.payload as { key: string }));
+    const limits = new LimitsCapability(
+      resolveLimits([{ layer: "project", limits: { worktree: { includeCapBytes: 1000 } } }]),
+      bus,
+      { workspace: root },
+    );
+    const vcs = new VcsAdapter(root, () => {}, () => limits.get("worktree.includeCapBytes"), limits);
+    const wt = await vcs.createWorktree("wfit", undefined, ["a.bin"]);
+    expect(fs.existsSync(path.join(wt.path, "a.bin"))).toBe(true);
+    expect(hits.filter((h) => h.key === "worktree.includeCapBytes").length).toBe(0);
   });
 
   it("preserves file modes on a copied file", async () => {

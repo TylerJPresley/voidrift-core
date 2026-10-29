@@ -383,6 +383,10 @@ export function buildCoreTools(
         return matches.length === 0 ? "No matches found." : matches.map((m) => `${m.path}:${m.line}:${m.text}`).join("\n");
       }
       // Timed out → bounded filename fallback.
+      // §13.11 `tools.searchTimeoutMs` — emit ONE LIMIT_HIT naming the key when
+      // the wall-clock budget fires (the grep is abandoned and the glob-based
+      // filename fallback runs). The port dedups per key per turn.
+      cfg.limits?.hit("tools.searchTimeoutMs", searchTimeoutMs, { what: "content search timed out; filename fallback" });
       const cap = cfg.limits ? cfg.limits.get("tools.searchFallbackMax") : 100;
       // Match the pattern against file names: a bare word becomes `*word*`; a
       // user-supplied glob (containing `*`/`?`) is used as-is under the root.
@@ -392,7 +396,14 @@ export function buildCoreTools(
       if (g.error) {
         return toolError(`Error: content search timed out and the filename fallback failed: ${g.error}`, config);
       }
-      const names = (g.files ?? []).map((f) => f.path).slice(0, cap);
+      const all = g.files ?? [];
+      const names = all.map((f) => f.path).slice(0, cap);
+      // §13.11 `tools.searchFallbackMax` — registered `warn`: emit ONE LIMIT_HIT
+      // naming the key when the fallback drops results past the cap (alongside
+      // the visible notice the model already sees).
+      if (all.length > cap) {
+        cfg.limits?.hit("tools.searchFallbackMax", all.length, { what: "filename fallback results capped" });
+      }
       const notice =
         `ℹ the content search timed out; showing a bounded filename match instead ` +
         `(up to ${cap} results — raise limits.tools.searchFallbackMax).`;

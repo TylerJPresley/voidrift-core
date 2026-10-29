@@ -278,6 +278,12 @@ export function runCommand(command: string, opts: RunCommandOptions): Promise<Co
         return;
       }
       if (timedOut || sig === "SIGTERM") {
+        // §13.11 (TOOL6, owner 2026-10-29) — the command timeout STAYS `deny` (a
+        // command that never times out hangs the run), but a FIRED timeout emits
+        // exactly ONE `LIMIT_HIT {key,area,value,action,observed}` naming the key
+        // and the raise path, so the kill is discoverable in the trail. The port
+        // dedups per key per turn; absent (no port wired) nothing is emitted.
+        opts.limits?.hit("tools.commandTimeoutMs", timeoutMs, { what: "command timed out — process group killed" });
         resolve({ output: `Error: Command timed out after ${(timeoutMs / 1000).toFixed(1)} seconds.`, exitCode: 124, truncated: false });
         return;
       }

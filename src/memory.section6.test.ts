@@ -58,18 +58,14 @@ describe("§6 integration — memory, bounds, verified writes, typed loading", (
     fs = new InMemoryFileSystem();
   });
 
-  it("1 — a 2200-char user-model write succeeds; 2201 returns MEMORY_BOUND_EXCEEDED (§6.3/§6.4)", async () => {
+  it("1 — a 2200-char user-model write succeeds; 2201 is ACCEPTED under warn (the default) and emits MEMORY_SAVED (§6.3/§6.4, §13.11)", async () => {
     const { api, events } = await makeApi(fs);
     const ok = await api.memory.edit({ title: "Prefs", type: "user-model", scope: "workspace", body: "x".repeat(2200) });
     expect(ok.ok).toBe(true);
     expect(events).toContain("MEMORY_SAVED");
 
     const over = await api.memory.edit({ title: "Prefs Big", type: "user-model", scope: "workspace", body: "x".repeat(2201) });
-    expect(over.ok).toBe(false);
-    if (!over.ok) {
-      expect(over.error.code).toBe("MEMORY_BOUND_EXCEEDED");
-      expect(over.error.details).toMatchObject({ size: 2201, limit: 2200 });
-    }
+    expect(over.ok).toBe(true);
   });
 
   it("2 — a non-persisting write returns MEMORY_WRITE_UNVERIFIED and emits no MEMORY_SAVED (§6.4)", async () => {

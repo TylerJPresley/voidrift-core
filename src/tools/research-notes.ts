@@ -325,8 +325,11 @@ export function buildResearchNotesTool(deps: NotesToolDeps): StructuredToolInter
     const contentCap = deps.limits?.get("tools.notesContentMaxBytes") ?? MAX_NOTES_CONTENT_BYTES;
     const fileCap = deps.limits?.get("tools.notesFileMaxBytes") ?? MAX_NOTES_FILE_BYTES;
     if (contentBytes > contentCap) {
-      deps.limits?.hit("tools.notesContentMaxBytes", contentBytes, { what: "research note content too large" });
-      return `Error: content too large (${contentBytes} bytes; max ${contentCap})`;
+      // §13.11 — registered `warn`: emit ONE LIMIT_HIT and ACCEPT the write in
+      // full; a configured `{action:"deny"}` refuses at the bound with the same
+      // notice (the error carries the notice wording). No port → warn default.
+      const r = deps.limits?.hit("tools.notesContentMaxBytes", contentBytes, { what: "research note content too large" });
+      if (r?.action === "deny") return `Error: ${r.notice}`;
     }
 
     // Serialize the read-modify-write per target so concurrent appends to the
@@ -337,8 +340,8 @@ export function buildResearchNotesTool(deps: NotesToolDeps): StructuredToolInter
         if (effectiveMode === "create") {
           if (exists) return `Error: ${rel} already exists — 'create' never overwrites; use mode 'append' to extend it, or choose a new name.`;
           if (contentBytes > fileCap) {
-            deps.limits?.hit("tools.notesFileMaxBytes", contentBytes, { what: "research note file too large" });
-            return `Error: file too large after write (${contentBytes} bytes; max ${fileCap})`;
+            const r = deps.limits?.hit("tools.notesFileMaxBytes", contentBytes, { what: "research note file too large" });
+            if (r?.action === "deny") return `Error: ${r.notice}`;
           }
           await deps.fs.writeFileAtomic(rel, content, { mode: 0o600 });
           return JSON.stringify({ path: rel, bytes: contentBytes, mode: "create" });
@@ -348,8 +351,8 @@ export function buildResearchNotesTool(deps: NotesToolDeps): StructuredToolInter
         const next = prior + content;
         const nextBytes = byteLength(next);
         if (nextBytes > fileCap) {
-          deps.limits?.hit("tools.notesFileMaxBytes", nextBytes, { what: "research note file too large" });
-          return `Error: file too large after append (${nextBytes} bytes; max ${fileCap})`;
+          const r = deps.limits?.hit("tools.notesFileMaxBytes", nextBytes, { what: "research note file too large" });
+          if (r?.action === "deny") return `Error: ${r.notice}`;
         }
         await deps.fs.writeFileAtomic(rel, next, { mode: 0o600 });
         return JSON.stringify({ path: rel, bytes: contentBytes, mode: "append" });
