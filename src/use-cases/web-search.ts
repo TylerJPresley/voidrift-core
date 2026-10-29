@@ -131,14 +131,45 @@ function normalizeResults(
       url,
       snippet,
     });
-    if (out.length >= maxResults) break;
+    if (out.length >= maxResults) {
+      // §13.11 — `tools.webSearchMaxResults` is a `tunable`/`warn` cap. Dropping
+      // extra results must emit EXACTLY ONE `LIMIT_HIT` naming the key and keep
+      // the run going (warn never blocks). Scan the rest for one more ELIGIBLE
+      // (http(s), unseen, non-empty) row so the hit fires only on a real drop.
+      if (caps.limits) {
+        for (const extra of rows.slice(rows.indexOf(r) + 1)) {
+          const eu = typeof extra.url === "string" ? extra.url.trim() : "";
+          if (eu === "" || seen.has(eu)) continue;
+          if (classifyUrl(eu).verdict === "reject") continue;
+          caps.limits.hit("tools.webSearchMaxResults", maxResults, { what: "web_search extra results dropped at the cap" });
+          break;
+        }
+      }
+      break;
+    }
   }
   return out;
 }
 
-/** Read a single-hop response body as decoded text, capped (§8.5). */
-async function readText(res: HttpResponse, bodyMax?: number): Promise<string> {
-  const { bytes } = await res.readBodyCapped(bodyMax ?? limitDefault("tools.webSearchBodyMaxBytes"));
+/** Read a single-hop response body as decoded text, capped (§8.5).
+ *
+ * §13.11 — `tools.webSearchBodyMaxBytes` is a `safety`/`deny` DoS bound. The port
+ * signals `truncated` when it clipped the body; honor the RESOLVED action and
+ * emit EXACTLY ONE `LIMIT_HIT` naming the key. deny (the declared default) throws
+ * at the bound — `safeRun` turns the throw into an empty result + a fallback
+ * warning (a search never fails the turn, §8.2), and the partial body is not
+ * parsed. warn (if a layer overrides it) continues with the clipped body. */
+async function readText(res: HttpResponse, ctx?: ProviderContext): Promise<string> {
+  const bodyMax = ctx?.bodyMax ?? limitDefault("tools.webSearchBodyMaxBytes");
+  const { bytes, truncated } = await res.readBodyCapped(bodyMax);
+  if (truncated && ctx?.limits) {
+    const action = ctx.limits.action("tools.webSearchBodyMaxBytes");
+    const hit = ctx.limits.hit("tools.webSearchBodyMaxBytes", bodyMax, { what: "web_search response body over the byte cap" });
+    if (action === "deny") {
+      throw new Error(hit?.notice ?? `web_search response body over the byte cap (limits.tools.webSearchBodyMaxBytes = ${bodyMax})`);
+    }
+    // warn: fall through and parse the clipped body.
+  }
   return new TextDecoder("utf-8").decode(bytes);
 }
 
@@ -204,7 +235,7 @@ async function duckduckgo(query: string, ctx: ProviderContext): Promise<SearchRe
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
   const res = await portFetch(ctx.http, { url, timeoutMs: ctx.timeoutMs });
   if (res.status < 200 || res.status >= 300) throw new Error(`DuckDuckGo HTTP ${res.status}`);
-  const html = await readText(res, ctx.bodyMax);
+  const html = await readText(res, ctx);
   return parseDuckduckgo(html, ctxCaps(ctx));
 }
 
@@ -254,7 +285,7 @@ async function searxng(query: string, ctx: ProviderContext): Promise<SearchResul
     throw new Error("searxng returned 403 — enable `format=json` and relax the bot limiter on the instance");
   }
   if (res.status < 200 || res.status >= 300) throw new Error(`searxng HTTP ${res.status}`);
-  const text = await readText(res, ctx.bodyMax);
+  const text = await readText(res, ctx);
   let json: unknown;
   try {
     json = JSON.parse(text);
@@ -287,7 +318,7 @@ async function brave(query: string, ctx: ProviderContext): Promise<SearchResult[
     headers: { "x-subscription-token": ctx.apiKey, accept: "application/json" },
   });
   if (res.status < 200 || res.status >= 300) throw new Error(`brave HTTP ${res.status}`);
-  const json = JSON.parse(await readText(res, ctx.bodyMax)) as { web?: { results?: unknown[] } };
+  const json = JSON.parse(await readText(res, ctx)) as { web?: { results?: unknown[] } };
   const results = json.web?.results ?? [];
   return normalizeResults(
     results.map((r) => {
@@ -316,7 +347,7 @@ async function tavily(query: string, ctx: ProviderContext): Promise<SearchResult
     body: JSON.stringify({ query, max_results: ctx.maxResults }),
   });
   if (res.status < 200 || res.status >= 300) throw new Error(`tavily HTTP ${res.status}`);
-  const json = JSON.parse(await readText(res, ctx.bodyMax)) as { results?: unknown[] };
+  const json = JSON.parse(await readText(res, ctx)) as { results?: unknown[] };
   const results = json.results ?? [];
   return normalizeResults(
     results.map((r) => {

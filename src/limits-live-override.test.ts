@@ -141,7 +141,8 @@ describe("tools.webFetch* limits are live (§8.2, §13.11)", () => {
     expect(res.status).toBe("error");
     // The lowered cap (1) is named in the message, proving the override is live
     // (the default is 5 — WEB_FETCH_MAX_HOPS).
-    expect(res.content).toContain("too many redirects (> 1)");
+    expect(res.content).toContain("tools.webFetchMaxHops");
+    expect(res.content).toContain("limits.tools.webFetchMaxHops = 1");
     expect(WEB_FETCH_MAX_HOPS).toBe(limitDefault("tools.webFetchMaxHops"));
   });
 });

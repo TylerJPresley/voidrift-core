@@ -266,7 +266,15 @@ export class WorkspaceSurfaceImpl {
       // byte is buffered (core §8.2, §3.3); an oversized/escaping/unreadable path
       // throws and we degrade to null.
       bytes = await this.deps.fileSystem.readBinary(rel, { maxBytes });
-    } catch {
+    } catch (e) {
+      // §13.11 — `tools.workspaceFileMaxBytes` is a `warn` cap: an over-cap file
+      // is SKIPPED (degrades to null), but the skip is NEVER silent — emit ONE
+      // LIMIT_HIT naming the key so reflection/stats see the bound bite. Only
+      // the size-cap throw names the key; a PATH_ESCAPE/unreadable stays silent.
+      const msg = e instanceof Error ? e.message : String(e);
+      if (/exceeds the .*-byte cap/.test(msg)) {
+        this.deps.limits?.hit("tools.workspaceFileMaxBytes", maxBytes, { what: "workspace file over the byte cap (skipped)" });
+      }
       return null;
     }
     if (looksBinary(bytes)) return null;
@@ -353,7 +361,13 @@ export class WorkspaceSurfaceImpl {
       const abs = this.resolveInsideSync(root, rel);
       if (abs === null) return null;
       const st = fs.statSync(abs);
-      if (!st.isFile() || st.size > this.maxFileBytes()) return null;
+      if (!st.isFile()) return null;
+      if (st.size > this.maxFileBytes()) {
+        // §13.11 — over-cap file skipped: ONE LIMIT_HIT naming the key, not
+        // silent (same `warn` contract as the async readText skip above).
+        this.deps.limits?.hit("tools.workspaceFileMaxBytes", st.size, { what: "workspace file over the byte cap (skipped)" });
+        return null;
+      }
       const bytes = fs.readFileSync(abs);
       if (looksBinary(bytes)) return null;
       const hash = contentHash(bytes.toString("utf8"));

@@ -999,7 +999,18 @@ async function maybeEvict(
     headLines: config.toolsTrimHeadLines,
     tailLines: config.toolsTrimTailLines,
     mask: maskText,
-    ...(deps.limits ? { excerptLineMaxChars: deps.limits.get("context.excerptLineMaxChars") } : {}),
+    ...(deps.limits
+      ? {
+          excerptLineMaxChars: deps.limits.get("context.excerptLineMaxChars"),
+          // §13.11 — an excerpt line cut at the cap is NEVER silent: emit ONE
+          // LIMIT_HIT naming the key (the port dedups to one per turn).
+          onLineTruncated: () =>
+            deps.limits!.hit("context.excerptLineMaxChars", undefined, {
+              session: ownerSessionId,
+              what: "tool-result excerpt line truncated",
+            }),
+        }
+      : {}),
   });
   if (!e) return null;
   await writeEvicted(ownerSessionId, e.name, e.maskedBody);

@@ -1086,6 +1086,9 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
             suggestSessionName(model.transientUtilityModel(), ctx.current, ctx.turnSummary, {
               nameMaxChars: limits.get("session.nameMaxChars"),
               timeoutMs: limits.get("session.namingTimeoutMs"),
+              // §13.11 — a name cut at the cap emits ONE LIMIT_HIT naming the key.
+              onTruncate: (observed) =>
+                limits.hit("session.nameMaxChars", observed, { what: "session name truncated" }),
             }),
         });
 
@@ -2304,6 +2307,7 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
     fileSystem,
     makeEngine,
     getLimit: (key) => limits.get(key),
+    limitHit: (key, observed, session) => limits.hit(key, observed, session ? { session } : undefined).notice,
     makeSubagents,
     ...(opts.startAgent ? { startAgent: opts.startAgent } : {}),
     ...(opts.startSessionApprovalMode ? { startSessionApprovalMode: opts.startSessionApprovalMode } : {}),

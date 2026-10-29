@@ -79,11 +79,12 @@ export interface Eviction {
  * (`context.excerptLineMaxChars`, §13.11/CTX12) so the handle stays bounded even
  * when the body is a single huge line. When the body already fits (few short
  * lines), it is returned whole. */
-function headTail(body: string, head: number, tail: number, lineMax: number): string {
-  const cap = (line: string): string =>
-    line.length <= lineMax
-      ? line
-      : `${line.slice(0, lineMax)}… [${line.length - lineMax} more chars on this line]`;
+function headTail(body: string, head: number, tail: number, lineMax: number, onLineTruncated?: () => void): string {
+  const cap = (line: string): string => {
+    if (line.length <= lineMax) return line;
+    onLineTruncated?.();
+    return `${line.slice(0, lineMax)}… [${line.length - lineMax} more chars on this line]`;
+  };
   const lines = body.split("\n");
   if (lines.length <= head + tail) {
     // Few lines, but any single line may still be enormous — cap each.
@@ -114,12 +115,16 @@ export function evict(
     mask: (s: string) => string;
     /** §13.11/CTX12 — per-excerpt-line cap. Defaults to the registry default. */
     excerptLineMaxChars?: number;
+    /** §13.11 — invoked (at least once) when a line was truncated at the
+     * `context.excerptLineMaxChars` cap, so the caller emits ONE `LIMIT_HIT`
+     * naming the key (the entity stays pure — no port here). */
+    onLineTruncated?: () => void;
   },
 ): Eviction {
   const maskedBody = opts.mask(content);
   const name = evictionCacheName(maskedBody);
   const relPath = evictionCachePath(opts.sessionId, name);
-  const excerpt = headTail(maskedBody, opts.headLines, opts.tailLines, opts.excerptLineMaxChars ?? limitDefault("context.excerptLineMaxChars"));
+  const excerpt = headTail(maskedBody, opts.headLines, opts.tailLines, opts.excerptLineMaxChars ?? limitDefault("context.excerptLineMaxChars"), opts.onLineTruncated);
   const size = Buffer.byteLength(maskedBody, "utf8");
   const tokens = estimateTokens(maskedBody);
   const handle = [
@@ -157,6 +162,7 @@ export function applyResultPolicy(
     tailLines: number;
     mask: (s: string) => string;
     excerptLineMaxChars?: number;
+    onLineTruncated?: () => void;
   },
 ): Eviction | null {
   if (!shouldEvict(content, { window: opts.window, pct: opts.pct })) return null;
@@ -165,6 +171,7 @@ export function applyResultPolicy(
     headLines: opts.headLines,
     tailLines: opts.tailLines,
     mask: opts.mask,
+    ...(opts.onLineTruncated ? { onLineTruncated: opts.onLineTruncated } : {}),
     ...(opts.excerptLineMaxChars !== undefined ? { excerptLineMaxChars: opts.excerptLineMaxChars } : {}),
   });
 }

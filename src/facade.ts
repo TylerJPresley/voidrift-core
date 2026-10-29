@@ -210,6 +210,10 @@ export interface FacadeDeps {
    * effect. Used for the rollback harness-note caps (ROLL3). Optional: absent in
    * tests (falls back to the entity defaults). */
   getLimit?: (key: string) => number;
+  /** Emit ONE `LIMIT_HIT` for a key through the runtime `LimitsPort` (§13.11):
+   * used by the §3.8 response-schema boundary (a `safety`/`deny` size bound).
+   * Returns the one-line notice. Optional: absent in tests. */
+  limitHit?: (key: string, observed?: number, session?: string) => string;
   /**
    * Resolve the session's active top-level agent definition by name (§2.7),
    * supplied by the facade from the shared Subagents registry. The engine and
@@ -810,6 +814,17 @@ export class CoreAPI {
       if (req.responseSchema !== undefined) {
         const v = validateResponseSchema(req.responseSchema, this.deps.config.effectiveLimit("tools.responseSchemaMaxBytes"));
         if (!v.ok) {
+          // §13.11 — `tools.responseSchemaMaxBytes` is a `safety`/`deny` size
+          // bound (a huge schema is a DoS/parse surface): the refusal was
+          // previously silent on the port. When the size cap is what bit, emit
+          // EXACTLY ONE LIMIT_HIT naming the key + raise path. A layer may set
+          // the action to `warn`, but this is a safety/download-class bound — it
+          // keeps refusing and still emits the hit (§13.11).
+          if (v.reason === "responseSchema exceeds the size cap") {
+            const cap = this.deps.config.effectiveLimit("tools.responseSchemaMaxBytes");
+            const notice = this.deps.limitHit?.("tools.responseSchemaMaxBytes", cap, sessionId);
+            return err(coreError(ErrorCode.INVALID_INPUT, notice ?? v.reason, { field: "responseSchema" }));
+          }
           return err(coreError(ErrorCode.INVALID_INPUT, v.reason, { field: "responseSchema" }));
         }
         runOptions.responseSchema = v.value;

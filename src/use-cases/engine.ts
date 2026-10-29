@@ -642,7 +642,7 @@ export async function suggestSessionName(
   model: BaseChatModel,
   current: string,
   turnSummary: string,
-  opts: { nameMaxChars?: number; timeoutMs?: number } = {},
+  opts: { nameMaxChars?: number; timeoutMs?: number; onTruncate?: (observed: number) => void } = {},
 ): Promise<string | null> {
   const nameMaxChars = opts.nameMaxChars ?? sessionNameMaxChars();
   const safeSummary = maskText(turnSummary).slice(0, 2000);
@@ -666,6 +666,10 @@ export async function suggestSessionName(
     // never carry a terminal-injection or direction-spoof payload (§5.5, §10.12).
     const firstLine = raw.split("\n")[0]!.replace(/^["'`]+|["'`]+$/g, "").trim();
     const name = sanitizeTrustedText(firstLine, nameMaxChars);
+    // §13.11 — a model-proposed name longer than the cap is truncated by the
+    // sanitizer; that cut is NEVER silent — signal it so the caller emits ONE
+    // LIMIT_HIT naming `session.nameMaxChars`.
+    if (firstLine.length > nameMaxChars) opts.onTruncate?.(firstLine.length);
     return name.length > 0 ? name : null;
   } catch {
     return null;
@@ -2293,6 +2297,23 @@ export class Engine {
         bytes = await fs.readBinary(p, { maxBytes: maxImageBytes });
       } catch (e) {
         const msg = e instanceof CoreErrorException ? e.error.message : String(e);
+        // §13.11 — `tools.imageMaxBytes` is a `safety`/download-class DENY bound:
+        // an over-cap image is REFUSED (readBinary throws before a byte is
+        // buffered). The refusal was previously silent on the port; emit EXACTLY
+        // ONE LIMIT_HIT naming the key + raise path. Even if a layer sets the
+        // action to `warn`, this is a safety/download bound — keep refusing and
+        // still emit the hit (§13.11): the resolved action does not relax it.
+        if (/exceeds the .*-byte cap/.test(msg)) {
+          const notice = this.deps.limits?.hit("tools.imageMaxBytes", maxImageBytes, {
+            session: session.id,
+            what: "image attachment over the byte cap",
+          }).notice;
+          return {
+            ok: false,
+            code: ErrorCode.INVALID_INPUT,
+            message: notice ?? `could not read image: ${maskText(msg)}`,
+          };
+        }
         return { ok: false, code: ErrorCode.INVALID_INPUT, message: `could not read image: ${maskText(msg)}` };
       }
       const mime = sniffImageMime(bytes);

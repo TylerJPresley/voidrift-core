@@ -65,11 +65,16 @@ describe("FilesystemRunCache store/handle (§7.2)", () => {
     expect(b.handle).toContain("/run/sB/");
   });
 
-  it("truncates a blob over run.entryMaxBytes to the cap before storing", () => {
-    const cache = new FilesystemRunCache({ workspaceRoot: ws, sessionId: "s1", entryMaxBytes: 10 });
-    const { handle, bytes } = cache.store("brief", "y".repeat(100));
-    expect(bytes).toBe(10);
-    expect(readFileSync(path.join(ws, handle), "utf8").length).toBe(10);
+  it("truncates a blob over run.entryMaxBytes to the cap, appends a marker, and fires one LIMIT_HIT", () => {
+    const hits: { key: string; value: number; observed?: number }[] = [];
+    const cache = new FilesystemRunCache({ workspaceRoot: ws, sessionId: "s1", entryMaxBytes: 4000, onLimitHit: (i) => hits.push(i) });
+    const { handle, bytes } = cache.store("brief", "y".repeat(20000));
+    const body = readFileSync(path.join(ws, handle), "utf8");
+    expect(body.startsWith("y".repeat(10))).toBe(true); // content kept
+    expect(body).toContain("limits.run.entryMaxBytes");
+    expect(bytes).toBeLessThanOrEqual(4000); // marker reserved inside the cap
+    expect(hits.filter((h) => h.key === "run.entryMaxBytes")).toHaveLength(1);
+    expect(hits.find((h) => h.key === "run.entryMaxBytes")?.observed).toBe(20000);
   });
 
   it("bounds total size oldest-first and fires one LIMIT_HIT on eviction", () => {
@@ -128,7 +133,8 @@ describe("InMemoryRunCache", () => {
     const a = cache.store("brief", "aaaaaaaa");
     expect(cache.read(a.handle)).toBe("aaaaaaaa");
     const big = cache.store("brief", "z".repeat(100));
-    expect(big.bytes).toBe(10);
+    expect(big.bytes).toBeGreaterThan(10); // truncated to 10 + an appended marker
+    expect(hits.some((h) => h.key === "run.entryMaxBytes")).toBe(true);
     // a (8) is evicted because total exceeded 15 after the second store.
     expect(cache.read(a.handle)).toBeNull();
     expect(hits.some((h) => h.key === "run.cacheMaxBytes")).toBe(true);

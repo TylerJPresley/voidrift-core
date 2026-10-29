@@ -248,7 +248,18 @@ export async function runWebFetch(url: string, deps: WebFetchDeps): Promise<WebF
 
     if (response.status >= 300 && response.status < 400) {
       if (hop === maxHops) {
-        return { status: "error", content: `Error: too many redirects (> ${maxHops})` };
+        // §13.11 — `tools.webFetchMaxHops` is a `safety`/`deny` SSRF bound. Emit
+        // EXACTLY ONE `LIMIT_HIT` and use its notice as the refusal message. We
+        // consult the RESOLVED action for the event, but a configured `warn` does
+        // NOT follow further hops: for a download-class hop cap `warn` is
+        // documented unsafe (§13.11 action paragraph — relaxing an SSRF hop bound
+        // re-opens the redirect-chase surface), so we keep refusing and only
+        // record the resolved action on the hit.
+        const hopAction = deps.limits?.action("tools.webFetchMaxHops") ?? "deny";
+        void hopAction; // resolved action rides on the emitted hit, not the decision
+        const hit = deps.limits?.hit("tools.webFetchMaxHops", maxHops, { what: `web_fetch exceeded the redirect-hop cap (> ${maxHops})` });
+        const notice = hit?.notice ?? `too many redirects (> ${maxHops}) (limits.tools.webFetchMaxHops = ${maxHops})`;
+        return { status: "error", content: `Error: ${notice}` };
       }
       if (!response.location) {
         return { status: "error", content: `Error: ${response.status} redirect with no Location` };
@@ -275,11 +286,31 @@ export async function runWebFetch(url: string, deps: WebFetchDeps): Promise<WebF
   const inlineMax = deps.limits?.get("tools.webFetchInlineMax") ?? limitDefault("tools.webFetchInlineMax");
   const previewMax = deps.limits?.get("tools.webFetchPreview") ?? limitDefault("tools.webFetchPreview");
 
-  const { bytes } = await response.readBodyCapped(bodyMax);
+  // §13.11 — `tools.webFetchBodyMaxBytes` is a `safety`/`deny` DoS bound. The
+  // port signals when it clipped the body mid-stream (`truncated`); do NOT drop
+  // that flag. When the limits port is wired, honor the RESOLVED action: deny
+  // (the declared default) refuses at the bound — the partial body is not used
+  // and the tool returns its normal error-result shape with the one-line notice;
+  // warn (if a layer overrides it) continues with the clipped body plus a marker.
+  // Either path emits EXACTLY ONE `LIMIT_HIT` naming the key. With no port there
+  // is no action to resolve and no event sink, so the legacy cap-and-continue
+  // holds (the body is already bounded mid-stream).
+  const { bytes, truncated } = await response.readBodyCapped(bodyMax);
+  let bodyMarker = "";
+  if (truncated && deps.limits) {
+    const bodyAction = deps.limits.action("tools.webFetchBodyMaxBytes");
+    const hit = deps.limits.hit("tools.webFetchBodyMaxBytes", bodyMax, { what: "web_fetch response body over the byte cap" });
+    if (bodyAction === "deny") {
+      const notice = hit?.notice ?? `web_fetch response body over the byte cap (limits.tools.webFetchBodyMaxBytes = ${bodyMax})`;
+      return { status: "error", content: `Error: ${notice}` };
+    }
+    // warn: continue with the clipped body; the marker below names the key.
+    bodyMarker = `\n\n${limitMarker("tools.webFetchBodyMaxBytes", bodyMax)}`;
+  }
   const raw = new TextDecoder("utf-8").decode(bytes);
   const minExtract = deps.limits?.get("tools.webFetchMinExtract") ?? limitDefault("tools.webFetchMinExtract");
   const text = ct === "text/html" ? extractReadable(raw, finalUrl, minExtract) : raw.trim();
-  const masked = deps.mask(stripUnsafeCharsKeepWhitespace(text));
+  const masked = deps.mask(stripUnsafeCharsKeepWhitespace(text)) + bodyMarker;
 
   const cacheRel = webCachePath(url);
   const cacheBody = `<!-- source: ${url} -->\n${masked}`;

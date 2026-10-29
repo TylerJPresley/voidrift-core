@@ -40,6 +40,7 @@ import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import type { RunCache, RunCacheHandle, RunCacheKind } from "../entities/ports/run-cache.js";
 import { limitDefault } from "../entities/limits.js";
+import { limitMarker } from "../entities/ports/limits-port.js";
 
 const DIR_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -59,9 +60,11 @@ export interface RunCacheDeps {
   maxBytes?: number;
   /** The effective cascaded per-blob byte cap (§13.11); defaults to the registry value. */
   entryMaxBytes?: number;
-  /** Emit ONE `LIMIT_HIT` for `run.cacheMaxBytes` when a `store` evicts to stay
-   * within the cap (§13.11). Optional. */
-  onLimitHit?: (info: { key: string; value: number }) => void;
+  /** Emit ONE `LIMIT_HIT` for a run-cache limit (`run.cacheMaxBytes` on an
+   * oldest-first eviction, or `run.entryMaxBytes` when a single blob is
+   * truncated to the per-entry cap, §13.11). `observed` is the pre-truncation
+   * byte size when a blob was cut. Optional. */
+  onLimitHit?: (info: { key: string; value: number; observed?: number }) => void;
 }
 
 /** The filesystem run cache (§7.2, §8.7). */
@@ -89,8 +92,16 @@ export class FilesystemRunCache implements RunCache {
     // bounded, on a char boundary). The returned bytes/lines reflect what was
     // stored.
     let stored = text;
-    if (Buffer.byteLength(stored, "utf8") > this.entryMaxBytes) {
-      stored = this.truncateToBytes(stored, this.entryMaxBytes);
+    const originalBytes = Buffer.byteLength(stored, "utf8");
+    if (originalBytes > this.entryMaxBytes) {
+      // §13.11 — a single over-cap blob is truncated to the per-entry cap, but
+      // NEVER silently: fire ONE LIMIT_HIT for `run.entryMaxBytes` and append a
+      // visible marker naming the key so the receiver of the handle sees the cut.
+      // Reserve room for the marker so the stored blob stays WITHIN the cap.
+      const marker = `\n${limitMarker("run.entryMaxBytes", originalBytes)}`;
+      const room = Math.max(0, this.entryMaxBytes - Buffer.byteLength(marker, "utf8"));
+      stored = this.truncateToBytes(stored, room) + marker;
+      this.deps.onLimitHit?.({ key: "run.entryMaxBytes", value: this.entryMaxBytes, observed: originalBytes });
     }
     const bytes = Buffer.byteLength(stored, "utf8");
     const hash8 = createHash("sha256").update(stored, "utf8").digest("hex").slice(0, 8);
@@ -215,7 +226,7 @@ export class InMemoryRunCache implements RunCache {
   private readonly entryMaxBytes: number;
 
   constructor(
-    private readonly deps: { sessionId: string; maxBytes?: number; entryMaxBytes?: number; onLimitHit?: (info: { key: string; value: number }) => void },
+    private readonly deps: { sessionId: string; maxBytes?: number; entryMaxBytes?: number; onLimitHit?: (info: { key: string; value: number; observed?: number }) => void },
   ) {
     this.maxBytes = deps.maxBytes ?? limitDefault("run.cacheMaxBytes");
     this.entryMaxBytes = deps.entryMaxBytes ?? limitDefault("run.entryMaxBytes");
@@ -228,10 +239,16 @@ export class InMemoryRunCache implements RunCache {
 
   store(kind: RunCacheKind, text: string): RunCacheHandle {
     let stored = text;
-    if (Buffer.byteLength(stored, "utf8") > this.entryMaxBytes) {
-      let end = Math.min(stored.length, this.entryMaxBytes);
-      while (end > 0 && Buffer.byteLength(stored.slice(0, end), "utf8") > this.entryMaxBytes) end--;
-      stored = stored.slice(0, end);
+    const originalBytes = Buffer.byteLength(stored, "utf8");
+    if (originalBytes > this.entryMaxBytes) {
+      // §13.11 — per-blob truncation is never silent: ONE LIMIT_HIT + marker,
+      // with the marker reserved inside the cap so the blob stays within it.
+      const marker = `\n${limitMarker("run.entryMaxBytes", originalBytes)}`;
+      const room = Math.max(0, this.entryMaxBytes - Buffer.byteLength(marker, "utf8"));
+      let end = Math.min(stored.length, room);
+      while (end > 0 && Buffer.byteLength(stored.slice(0, end), "utf8") > room) end--;
+      stored = stored.slice(0, end) + marker;
+      this.deps.onLimitHit?.({ key: "run.entryMaxBytes", value: this.entryMaxBytes, observed: originalBytes });
     }
     const bytes = Buffer.byteLength(stored, "utf8");
     const hash8 = createHash("sha256").update(stored, "utf8").digest("hex").slice(0, 8);
