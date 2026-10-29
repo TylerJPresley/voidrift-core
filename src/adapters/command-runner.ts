@@ -31,7 +31,7 @@
 import child_process from "node:child_process";
 import { buildCommandEnv } from "../entities/command-env.js";
 import { limitDefault } from "../entities/limits.js";
-import { limitMarker, type LimitsPort } from "../entities/ports/limits-port.js";
+import { limitMarker, limitNotice, type LimitsPort } from "../entities/ports/limits-port.js";
 import type { RunCache } from "../entities/ports/run-cache.js";
 import { maskText } from "../use-cases/secret-mask.js";
 
@@ -150,6 +150,15 @@ export function runCommand(command: string, opts: RunCommandOptions): Promise<Co
   // registry default (byte-identical to the former 100000 / 500 constants).
   const maxOutputBytes = opts.maxOutputBytes ?? opts.limits?.get("tools.commandOutputMaxBytes") ?? limitDefault("tools.commandOutputMaxBytes");
   const graceMs = opts.killGraceMs ?? opts.limits?.get("tools.commandKillGraceMs") ?? limitDefault("tools.commandKillGraceMs");
+  // §13.11 — the effective ACTION for the output cap (TOOL5). `warn` (the
+  // default) never blocks: oversized output is truncated or stored by reference
+  // and the run continues. `deny` refuses AT THE BOUND: as soon as the output
+  // crosses `maxOutputBytes` the process group is killed through the existing
+  // kill path (`tools.commandKillGraceMs`) and the tool returns its normal error
+  // result whose one-line message is the notice (key, value, raise path); the
+  // output past the bound is NEVER delivered. The limits port exposes `action`
+  // directly; absent (no port wired) the registry default `warn` stands.
+  const outputAction = opts.limits?.action("tools.commandOutputMaxBytes") ?? "warn";
   const { signal } = opts;
 
   // Abort BEFORE spawn: never launch a child (§3.3).
@@ -163,6 +172,7 @@ export function runCommand(command: string, opts: RunCommandOptions): Promise<Co
     let timedOut = false;
     let cancelled = false;
     let settled = false;
+    let deniedOverCap = false;
     let killTimer: NodeJS.Timeout | undefined;
 
     const child = child_process.spawn(command, {
@@ -218,11 +228,25 @@ export function runCommand(command: string, opts: RunCommandOptions): Promise<Co
       signal?.removeEventListener("abort", onAbort);
     };
 
+    // §13.11 deny — once the accumulated output crosses the byte cap, refuse at
+    // the bound: trip the flag ONCE and kill the group through the existing path
+    // (SIGTERM then SIGKILL after the grace). Further data is ignored; the close
+    // handler turns `deniedOverCap` into the error result + one LIMIT_HIT.
+    const enforceDeny = (): void => {
+      if (deniedOverCap) return;
+      if (Buffer.byteLength(stdout, "utf8") + Buffer.byteLength(stderr, "utf8") > maxOutputBytes) {
+        deniedOverCap = true;
+        scheduleHardKill();
+      }
+    };
+
     child.stdout.on("data", (data) => {
       stdout += String(data);
+      if (outputAction === "deny") enforceDeny();
     });
     child.stderr.on("data", (data) => {
       stderr += String(data);
+      if (outputAction === "deny") enforceDeny();
     });
 
     child.on("error", (err) => {
@@ -238,6 +262,19 @@ export function runCommand(command: string, opts: RunCommandOptions): Promise<Co
       cleanup();
       if (cancelled) {
         resolve({ output: "Command cancelled.", exitCode: 1, truncated: false });
+        return;
+      }
+      // §13.11 deny — the output crossed the cap and the group was killed at the
+      // bound. Return the NORMAL error result shape whose one-line message is the
+      // notice (key, value, raise path); the output past the bound is NOT
+      // delivered. Exactly one LIMIT_HIT fires with action `deny` (the port dedups
+      // per key per turn). Checked before the timeout branch because the deny kill
+      // also surfaces as `sig === "SIGTERM"`.
+      if (deniedOverCap) {
+        const value = opts.limits?.get("tools.commandOutputMaxBytes") ?? maxOutputBytes;
+        opts.limits?.hit("tools.commandOutputMaxBytes", value, { what: "command output over deny cap" });
+        const notice = `Error: ${limitNotice("command output refused", "tools.commandOutputMaxBytes", value)}`;
+        resolve({ output: notice, exitCode: 1, truncated: true });
         return;
       }
       if (timedOut || sig === "SIGTERM") {

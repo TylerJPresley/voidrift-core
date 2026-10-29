@@ -163,27 +163,33 @@ function storeByRef(ref: ByReference, kind: RunCacheKind, raw: string, what: str
 }
 
 /** Fold the batch's single-form argument into a DispatchRequest brief (§7.2).
- * Within `task.briefMaxChars` it passes whole. Over the bound, with a run cache
- * wired, the WHOLE brief is stored and the worker receives the first
- * `task.briefMaxChars` chars plus a footer naming the handle (the worker holds
- * `read_file`); without a run cache it falls back to the inline clip + marker.
- * A LIMIT_HIT is emitted once either way. */
+ * Within `task.briefMaxChars` it passes whole. Over the bound, the limits port's
+ * ACTION decides: `warn` (the default) keeps the run going — with a run cache the
+ * WHOLE brief is stored and the worker receives the first `task.briefMaxChars`
+ * chars plus a footer naming the handle (the worker holds `read_file`), else the
+ * inline clip + marker; `deny` refuses the task call BEFORE dispatch (§13.11 deny
+ * refuses) — the caller returns the normal tool error carrying the notice and
+ * nothing is dispatched. A LIMIT_HIT is emitted once either way. */
 function briefOf(
   task: string,
   context: string | undefined,
   limits: LimitsPort | undefined,
   scope: { session?: string; worker?: string } | undefined,
   ref: ByReference | undefined,
-): string {
+): { brief: string } | { deny: string } {
   const max = lim(limits, "task.briefMaxChars");
   const full = context ? `${task}\n\nContext:\n${context}` : task;
-  if (full.length <= max) return full;
-  if (limits) limits.hit("task.briefMaxChars", full.length, { what: "task brief truncated", ...scope });
+  if (full.length <= max) return { brief: full };
+  if (limits) {
+    const r = limits.hit("task.briefMaxChars", full.length, { what: "task brief truncated", ...scope });
+    // deny refuses the task call before dispatch; the notice rides the error.
+    if (r.action === "deny") return { deny: r.notice };
+  }
   if (ref) {
     const { handle, bytes } = storeByRef(ref, "brief", full, "task brief", "task.briefMaxChars");
-    return full.slice(0, max) + `\n[brief continues: ${bytes} bytes at ${handle} — read it with read_file]`;
+    return { brief: full.slice(0, max) + `\n[brief continues: ${bytes} bytes at ${handle} — read it with read_file]` };
   }
-  return full.slice(0, max) + `\n${limitMarker("task.briefMaxChars", full.length)}`;
+  return { brief: full.slice(0, max) + `\n${limitMarker("task.briefMaxChars", full.length)}` };
 }
 
 /** The result status the model sees per task (§7.2): the worker lifecycle folded
@@ -319,7 +325,16 @@ function renderBatch(
     const raw = w?.summary ?? "";
     let bounded = raw.slice(0, max);
     if (raw.length > max) {
-      if (limits) limits.hit("task.batchResultMaxChars", raw.length, { what: "batch worker result truncated", ...scope });
+      if (limits) {
+        const r = limits.hit("task.batchResultMaxChars", raw.length, { what: "batch worker result truncated", ...scope });
+        // deny: the stage fails and the oversize content is NOT delivered — the
+        // row carries only the notice and the batch is reported as an error.
+        if (r.action === "deny") {
+          anyFailed = true;
+          lines.push(`[${id}] ${worker} → failed\nError: ${r.notice}`.trim());
+          continue;
+        }
+      }
       if (ref) {
         const { handle } = storeByRef(ref, "batch-result", raw, `batch result for "${id}"`, "task.batchResultMaxChars");
         bounded += `\n[full result: ${handle}]`;
@@ -427,9 +442,11 @@ export function buildTaskTool(deps: TaskToolDeps): StructuredToolInterface {
           const names = [...valid].sort().join(", ") || "(none)";
           return toError(`Error: unknown worker "${worker}". Valid workers: ${names}.`);
         }
+        const brief = briefOf(task, context, deps.limits, scope, ref);
+        if ("deny" in brief) return toError(`Error: ${brief.deny}`);
         const request: DispatchRequest = {
           agent: worker,
-          task: briefOf(task, context, deps.limits, scope, ref),
+          task: brief.brief,
           ...(deps.resultSchema !== undefined ? { resultSchema: deps.resultSchema } : {}),
         };
         const result = await deps.dispatch([request], signal);
@@ -442,13 +459,18 @@ export function buildTaskTool(deps: TaskToolDeps): StructuredToolInterface {
       const bad = validateBatch(tasks, valid, deps.limits ? deps.limits.get("task.batchMax") : undefined);
       if (bad) return toError(bad);
 
-      const requests: DispatchRequest[] = tasks.map((t) => ({
-        id: t.id,
-        agent: t.worker,
-        task: briefOf(t.task, t.context, deps.limits, scope, ref),
-        ...(t.dependsOn && t.dependsOn.length > 0 ? { dependsOn: t.dependsOn } : {}),
-        ...(deps.resultSchema !== undefined ? { resultSchema: deps.resultSchema } : {}),
-      }));
+      const requests: DispatchRequest[] = [];
+      for (const t of tasks) {
+        const brief = briefOf(t.task, t.context, deps.limits, scope, ref);
+        if ("deny" in brief) return toError(`Error: ${brief.deny}`);
+        requests.push({
+          id: t.id,
+          agent: t.worker,
+          task: brief.brief,
+          ...(t.dependsOn && t.dependsOn.length > 0 ? { dependsOn: t.dependsOn } : {}),
+          ...(deps.resultSchema !== undefined ? { resultSchema: deps.resultSchema } : {}),
+        });
+      }
       // ONE fan-out for the whole batch (one grant / one batched approval, §7.2).
       const result = await deps.dispatch(requests, signal);
       // Map results back by task id (Subagents stamps each WorkerInfo with its

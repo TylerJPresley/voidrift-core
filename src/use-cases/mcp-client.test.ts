@@ -122,6 +122,7 @@ describe("§8.4 — MCP client", () => {
       },
       hit: () => ({ notice: "", action: "warn" as const, first: false }),
       resetTurn: () => {},
+      action: () => "warn" as const,
     };
     const client = new McpClient({
       bus,

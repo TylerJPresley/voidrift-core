@@ -66,6 +66,7 @@ import { maskSecrets, maskText } from "./secret-mask.js";
 import { sanitizeTrustedText } from "../entities/rollback.js";
 import { sessionNameMaxChars } from "../entities/ports/naming-port.js";
 import { limitDefault } from "../entities/limits.js";
+import { limitMarker, type LimitsPort } from "../entities/ports/limits-port.js";
 import {
   createDecisionMiddleware,
   resolveRules,
@@ -700,7 +701,7 @@ export async function draftSkillFromSequence(
     sessionIds: string[];
     examples: { source: string; name: string; status: string }[];
   },
-  opts: { evidencePacketMaxChars?: number; timeoutMs?: number } = {},
+  opts: { evidencePacketMaxChars?: number; timeoutMs?: number; limits?: LimitsPort; session?: string } = {},
 ): Promise<{ title: string; body: string; assets?: { path: string; content: string }[] } | null> {
   const schema = z.object({
     title: z.string().describe("A short imperative skill name, Title Case, 2–6 words."),
@@ -717,9 +718,24 @@ export async function draftSkillFromSequence(
   });
   // The evidence is DATA; mask it defensively even though signatures carry no
   // literal values, and bound its size to the `memory.evidencePacketMaxChars`
-  // limit (§13.11; default from the registry).
+  // limit (§13.11; default from the registry). No silent truncation: when the
+  // packet exceeds the cap the limits port emits exactly ONE LIMIT_HIT and the
+  // packet carries a visible marker naming the key (warn), or the draft is not
+  // generated at all (deny). The caller treats null as "no draft" so this
+  // BACKGROUND work never breaks the turn.
   const packetMax = opts.evidencePacketMaxChars ?? limitDefault("memory.evidencePacketMaxChars");
-  const fenced = maskText(JSON.stringify(evidence)).slice(0, packetMax);
+  const masked = maskText(JSON.stringify(evidence));
+  let fenced = masked;
+  if (masked.length > packetMax) {
+    const res = opts.limits?.hit("memory.evidencePacketMaxChars", masked.length, {
+      what: "skill-draft evidence packet truncated",
+      ...(opts.session ? { session: opts.session } : {}),
+    });
+    // deny → do not generate the skill draft; the LIMIT_HIT notice is the log.
+    if (res?.action === "deny") return null;
+    // warn (or no port) → bound and mark visibly with the key, never a silent cut.
+    fenced = masked.slice(0, packetMax) + `\n${limitMarker("memory.evidencePacketMaxChars", masked.length)}`;
+  }
   const framing =
     evidence.outcome === "failure"
       ? "This sequence repeatedly FAILED or was denied. Draft a skill that GUARDS against the failure or takes a safer ALTERNATIVE approach."

@@ -13,7 +13,7 @@ import { limitDefault } from "../entities/limits.js";
 import type { LimitsPort } from "../entities/ports/limits-port.js";
 
 function fakeLimits(): LimitsPort {
-  return { get: (k) => limitDefault(k), hit: () => ({ notice: "", action: "warn", first: false }), resetTurn: () => undefined };
+  return { get: (k) => limitDefault(k), hit: () => ({ notice: "", action: "warn", first: false }), resetTurn: () => undefined, action: () => "warn" };
 }
 
 function makeIngest(text: string, onRead?: () => Promise<never>): Ingest {

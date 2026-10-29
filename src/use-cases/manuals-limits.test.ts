@@ -15,6 +15,7 @@ describe("Manuals limits enforcement (§12.8 + §13.11)", () => {
     return {
       get: (key: string) => overrides[key] ?? defaults[key],
       hit: () => undefined,
+      action: () => "warn",
     } as unknown as LimitsPort;
   }
 

@@ -45,6 +45,11 @@ export interface LimitsPort {
   /** Clear the per-turn `LIMIT_HIT` dedup. The engine calls this at each turn
    * boundary so a key may emit once per turn (§13.11). */
   resetTurn(): void;
+  /** The effective ACTION of a limit key after the layered cascade + safety
+   * rule: `warn` (truncate/store and continue) or `deny` (refuse at the bound).
+   * Read WITHOUT emitting a `LIMIT_HIT`, so a site can decide before anything is
+   * delivered or recorded. Unknown keys fall back to the registry default. */
+  action(key: string): "warn" | "deny";
 }
 
 /** Build the one-line LIMIT_HIT notice in the blueprint's wording (§13.11). */

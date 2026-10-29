@@ -1537,6 +1537,7 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
       draftSkillFromSequence(model.transientUtilityModel(), evidence, {
         evidencePacketMaxChars: limits.get("memory.evidencePacketMaxChars"),
         timeoutMs: limits.get("session.namingTimeoutMs"),
+        limits,
       }),
     // §6.7/§10.6 — draft a memory-NOTE candidate from a repeated FAILURE shape
     // with ONE transient utility-model call (same seam as the sequence draft).

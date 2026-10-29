@@ -613,7 +613,18 @@ export class Subagents {
       }
 
       // Prefix the finished dependencies' bounded summaries into the brief (§7.2).
-      const brief = this.prefixDependencySummaries(req, deps, outcomes);
+      const prefixed = this.prefixDependencySummaries(req, deps, outcomes);
+      // §13.11 deny: a dependency summary over its deny cap fails this stage and
+      // does NOT deliver the oversize content; siblings are unaffected.
+      if ("deny" in prefixed) {
+        const w = this.newWorker(fanoutId, req.agent, req.id);
+        w.summary = `failed: ${prefixed.deny}`;
+        this.transition(w, "failed");
+        outcomes.set(key, { done: true, ok: false, worker: w });
+        out.push(w);
+        return;
+      }
+      const brief = prefixed.brief;
 
       await acquire();
       let w: LiveWorker;
@@ -657,8 +668,8 @@ export class Subagents {
     req: DispatchRequest,
     deps: string[],
     outcomes: Map<string, { worker: LiveWorker }>,
-  ): string {
-    if (deps.length === 0) return req.task;
+  ): { brief: string } | { deny: string } {
+    if (deps.length === 0) return { brief: req.task };
     const depMax = this.limit("task.depSummaryMaxChars");
     const briefMax = this.limit("task.briefMaxChars");
     const session = this.ownerSessionId();
@@ -672,7 +683,10 @@ export class Subagents {
       const rawSummary = outcomes.get(d)?.worker.summary ?? "";
       let clipped = rawSummary.slice(0, depMax);
       if (rawSummary.length > depMax) {
-        this.deps.limits?.hit("task.depSummaryMaxChars", rawSummary.length, { what: `dependency "${d}" summary truncated`, session });
+        const r = this.deps.limits?.hit("task.depSummaryMaxChars", rawSummary.length, { what: `dependency "${d}" summary truncated`, session });
+        // §13.11 deny: the dependent stage fails and the oversize summary is NOT
+        // delivered; the caller marks the worker failed with this notice.
+        if (r?.action === "deny") return { deny: r.notice };
         const stored = this.storeByRef("dep-summary", rawSummary, `dependency "${d}" summary`, "task.depSummaryMaxChars");
         clipped += stored
           ? `\n[summary continues: ${stored.bytes} bytes at ${stored.handle} — read it with read_file]`
@@ -681,14 +695,14 @@ export class Subagents {
       const summary = fenceSummary(clipped);
       if (summary) parts.push(`Result of "${d}":\n${summary}`);
     }
-    if (parts.length === 0) return req.task;
+    if (parts.length === 0) return { brief: req.task };
     const combined = `${parts.join("\n\n")}\n\n${req.task}`;
-    if (combined.length <= briefMax) return combined;
+    if (combined.length <= briefMax) return { brief: combined };
     this.deps.limits?.hit("task.briefMaxChars", combined.length, { what: "dependent brief truncated", session });
     const stored = this.storeByRef("brief", combined, "dependent brief", "task.briefMaxChars");
-    return combined.slice(0, briefMax) + (stored
+    return { brief: combined.slice(0, briefMax) + (stored
       ? `\n[brief continues: ${stored.bytes} bytes at ${stored.handle} — read it with read_file]`
-      : `\n${limitMarker("task.briefMaxChars", combined.length)}`);
+      : `\n${limitMarker("task.briefMaxChars", combined.length)}`) };
   }
 
   /** §7 — the engine's `task` tool entry point: fan out from a live turn with

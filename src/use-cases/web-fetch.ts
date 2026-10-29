@@ -289,9 +289,26 @@ export async function runWebFetch(url: string, deps: WebFetchDeps): Promise<WebF
   if (masked.length <= inlineMax) {
     content = masked;
   } else {
-    // §8.2/§8.7 — the page is over the inline threshold. The FULL text is already
-    // cached on disk at `cacheRel` (readable with `read_file`), so that path IS
-    // the handle — nothing is duplicated. Emit one LIMIT_HIT + one BY_REFERENCE.
+    // §13.11 — the page is over the inline threshold. The effective ACTION of the
+    // governing bound decides what happens. `tools.webFetchInlineMax` and
+    // `tools.webFetchPreview` are `warn` by default (the run continues, the full
+    // text stays readable through the by-reference handle), but a layer may set
+    // either to `deny`, which REFUSES at the bound. When the inline cap denies,
+    // or (when the inline cap only warns) the preview cap denies, nothing is
+    // delivered inline and the tool returns its normal error-result shape with the
+    // one-line notice and EXACTLY ONE `LIMIT_HIT` whose `action` is `deny`.
+    const inlineDenies = (deps.limits?.action("tools.webFetchInlineMax") ?? "warn") === "deny";
+    const previewDenies = (deps.limits?.action("tools.webFetchPreview") ?? "warn") === "deny";
+    if (inlineDenies || previewDenies) {
+      const denyKey = inlineDenies ? "tools.webFetchInlineMax" : "tools.webFetchPreview";
+      const hit = deps.limits?.hit(denyKey, masked.length, { what: "web_fetch page over the inline cap" });
+      const notice = hit?.notice ?? `web_fetch page over the inline cap (${denyKey})`;
+      return { status: "error", content: `Error: ${notice}` };
+    }
+
+    // §8.2/§8.7 — warn path. The FULL text is already cached on disk at `cacheRel`
+    // (readable with `read_file`), so that path IS the handle — nothing is
+    // duplicated. Emit one LIMIT_HIT + one BY_REFERENCE.
     const lines = masked === "" ? 0 : masked.split("\n").length;
     const bytes = Buffer.byteLength(masked, "utf8");
     deps.limits?.hit("tools.webFetchInlineMax", masked.length, { what: "web_fetch page over inline cap" });

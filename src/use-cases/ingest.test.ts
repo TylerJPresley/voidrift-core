@@ -27,6 +27,7 @@ function fakeLimits(overrides: Record<string, number> = {}): LimitsPort {
     get: (k) => (k in overrides ? overrides[k]! : limitDefault(k)),
     hit: () => ({ notice: "", action: "warn", first: false }),
     resetTurn: () => undefined,
+    action: () => "warn",
   };
 }
 
