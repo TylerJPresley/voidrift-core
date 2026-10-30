@@ -568,7 +568,6 @@ export const ConfigSchema = z
 
     workspaceMaxReadLines: z.number().int().positive().default(2000),
     workspaceMapDepth: z.number().int().positive().default(5),
-    shellCommandTimeoutMs: z.number().int().positive().default(30_000),
     shellMaxBufferBytes: z.number().int().positive().default(1_048_576),
     toolWaitMaxSeconds: z.number().int().positive().default(300),
     // `web_fetch` request timeout (§8.2, §8.6).
