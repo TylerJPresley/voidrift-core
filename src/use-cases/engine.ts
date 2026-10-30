@@ -170,6 +170,11 @@ export interface EngineDeps {
    * pipeline calls it only near a decision threshold; absent/unset falls back to
    * the measured-ratio estimate. Returns null when the endpoint cannot count. */
   countTokens?: (messages: BaseMessage[], tools: ToolDefinition[]) => Promise<number | null>;
+  /** §4.8 — whether `countTokens` is DECLARED exact (Anthropic `count_tokens`):
+   * an exact count is compared with the limit AS IS; a non-exact count (the
+   * OpenAI-compatible `/tokenize` flat prompt, a plugin provider) keeps the
+   * `estimateMarginTokens` margin. Defaults to false (margin kept). */
+  countTokensExact?: boolean;
   /** §10.7 — the clock used to measure per-model-call generation time (`genMs`,
    * first-to-last streamed token). Defaults to `Date.now`; a test injects a
    * scripted clock so the measured deltas are deterministic. */
@@ -1873,7 +1878,14 @@ export class Engine {
     if (this.nearDecisionThreshold(estimate, head.headTokens, maxOutputTokens)) {
       const exact = await this.exactCount(session, message, input);
       if (exact !== null) {
-        estimatedInput = exact + (this.estimateMargin() ?? ESTIMATE_MARGIN_TOKENS);
+        // §4.8 — a count the capability DECLARES exact (Anthropic count_tokens)
+        // is used AS IS; a non-exact count (the OpenAI-compatible /tokenize flat
+        // prompt, a plugin provider) keeps the estimate margin. The band that
+        // triggered this probe is unchanged either way, and the source stays
+        // `endpoint`.
+        estimatedInput = this.deps.countTokensExact
+          ? exact
+          : exact + (this.estimateMargin() ?? ESTIMATE_MARGIN_TOKENS);
         source = "endpoint";
         // §4.8 — "uses that count in place of the estimate for that one
         // decision" applies to EVERY threshold, not just the hard stop. The

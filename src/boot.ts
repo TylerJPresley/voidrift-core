@@ -1291,7 +1291,11 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
       // (Anthropic count_tokens, OpenAI-compatible /tokenize; unset elsewhere).
       // The engine (per-endpoint) is rebuilt on a model switch, so this is always
       // the selected endpoint's own capability — never a failover (invariant 26).
-      ...(model.countTokensFn() ? { countTokens: model.countTokensFn()! } : {}),
+      // `exact` (§4.8) decides whether the estimate margin is kept on its count.
+      ...(() => {
+        const ct = model.countTokensFn();
+        return ct ? { countTokens: ct, countTokensExact: ct.exact } : {};
+      })(),
       resolveModelEntryFile: (name) => {
         const p = config.modelEntryFile(name);
         return p ? tildeHome(p, os.homedir()) : undefined;

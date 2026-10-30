@@ -54,6 +54,7 @@ async function engineWith(opts: {
   window: number;
   maxOut: number | null;
   countTokens?: (messages: BaseMessage[], tools: { name: string }[]) => Promise<number | null>;
+  exact?: boolean;
 }) {
   const { EventBus } = await import("../entities/event-bus.js");
   const { Guardian, builtinGuardrails } = await import("../entities/guardian.js");
@@ -73,6 +74,7 @@ async function engineWith(opts: {
     chatModel: opts.model as never,
     modelName: "t",
     ...(opts.countTokens ? { countTokens: opts.countTokens } : {}),
+    ...(opts.exact !== undefined ? { countTokensExact: opts.exact } : {}),
     registry,
     guardian: new Guardian(builtinGuardrails()),
     warden: new Warden({ mode: "off" }),
@@ -162,6 +164,48 @@ describe("pre-send token counting (§4.8, §4.10, §11.7)", () => {
     expect(res.status).toBe("failed");
     expect(never.invoked).toBe(false);
     expect(calls).toBe(1);
+    expect(overflows[0]?.source).toBe("endpoint");
+  });
+
+  it("an EXACT count just under the limit is used without the margin — no refusal (§4.8)", async () => {
+    // Window 20k, maxOut 2k → hard stop 18k. A large input puts the ratio
+    // estimate in-band (within 2000 of the hard stop) but UNDER it, so the probe
+    // fires and the middleware's own ratio check also passes. The exact count
+    // 17000 is used AS IS: 17000 + 2000 maxOut = 19000 < 20000 → no refusal. With
+    // the 2000 margin it WOULD refuse, so this proves no margin on an exact count.
+    const input = "x ".repeat(29_000); // ~58k chars → ratio estimate ~16.5k, in-band, < 18k
+    const { engine, session, ws } = await engineWith({
+      model: usageModel(17_000),
+      id: "exact001",
+      window: 20_000,
+      maxOut: 2_000,
+      exact: true,
+      countTokens: async () => 17_000,
+    });
+    wss.push(ws);
+    const res = await engine.runTurn(session, input);
+    expect(res.status).toBe("completed");
+  });
+
+  it("a NON-exact count of the same N keeps the margin and refuses (source endpoint) (§4.8)", async () => {
+    // The same 17000, but NOT declared exact: 17000 + 2000 margin + 2000 maxOut =
+    // 21000 > 20000 → refuse, driven by the endpoint count.
+    const input = "x ".repeat(29_000);
+    const never = new NeverCalled();
+    const { engine, session, bus, ws } = await engineWith({
+      model: never,
+      id: "noexact1",
+      window: 20_000,
+      maxOut: 2_000,
+      exact: false,
+      countTokens: async () => 17_000,
+    });
+    wss.push(ws);
+    const overflows: { source?: string }[] = [];
+    bus.subscribe("CONTEXT_OVERFLOW", (e) => overflows.push(e.payload as { source?: string }));
+    const res = await engine.runTurn(session, input);
+    expect(res.status).toBe("failed");
+    expect(never.invoked).toBe(false);
     expect(overflows[0]?.source).toBe("endpoint");
   });
 

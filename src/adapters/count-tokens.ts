@@ -117,8 +117,26 @@ async function postJson(
 
 /** A capability that returns an exact input-token count or null (§4.8, §11.7).
  * `tools` are the tool definitions the request binds; they are counted too so the
- * exact count matches the assembled request (§4.8, §4.10). */
-export type CountTokensFn = (messages: BaseMessage[], tools: ToolDefinition[]) => Promise<number | null>;
+ * exact count matches the assembled request (§4.8, §4.10).
+ *
+ * The capability DECLARES whether its count is `exact` (§4.8): Anthropic
+ * `count_tokens` is exact, so its count is compared with the limit AS IS; the
+ * OpenAI-compatible `/tokenize` flat-prompt count is NOT exact, so the pre-flight
+ * `estimateMarginTokens` margin is kept on it. A plugin provider's count is not
+ * declared exact and defaults to false. The `count` still returns `number |
+ * null` either way — `exact` is a property of the capability, not the return. */
+export type CountTokensFn = ((messages: BaseMessage[], tools: ToolDefinition[]) => Promise<number | null>) & {
+  /** True when the endpoint's count is exact and needs no estimate margin (§4.8). */
+  exact: boolean;
+};
+
+/** Tag a count function with its `exact` declaration (§4.8). */
+function withExact(
+  fn: (messages: BaseMessage[], tools: ToolDefinition[]) => Promise<number | null>,
+  exact: boolean,
+): CountTokensFn {
+  return Object.assign(fn, { exact });
+}
 
 /**
  * Build the bundled `countTokens` capability for a resolved endpoint, or
@@ -131,7 +149,7 @@ export function bundledCountTokens(entry: ModelConfigEntry): CountTokensFn | und
 
   if (protocol === "anthropic") {
     const url = anthropicCountUrl(entry.baseUrl);
-    return async (messages, tools) => {
+    return withExact(async (messages, tools) => {
       const headers: Record<string, string> = { "anthropic-version": "2023-06-01" };
       if (key) headers["x-api-key"] = key;
       const res = await postJson(url, headers, {
@@ -145,13 +163,13 @@ export function bundledCountTokens(entry: ModelConfigEntry): CountTokensFn | und
       if (res.status < 200 || res.status >= 300) return null;
       const n = (res.json as { input_tokens?: unknown } | null)?.input_tokens;
       return typeof n === "number" && Number.isFinite(n) && n >= 0 ? n : null;
-    };
+    }, true); // Anthropic count_tokens is exact — no estimate margin (§4.8).
   }
 
   if (protocol === "openai") {
     const url = openAiTokenizeUrl(entry.baseUrl);
     if (!url) return undefined; // bundled cloud OpenAI offers no /tokenize
-    return async (messages, tools) => {
+    return withExact(async (messages, tools) => {
       const headers: Record<string, string> = {};
       if (key) headers["authorization"] = `Bearer ${key}`;
       // §4.8 — /tokenize counts a flat prompt and has no tools field, so append
@@ -165,7 +183,7 @@ export function bundledCountTokens(entry: ModelConfigEntry): CountTokensFn | und
       if (obj && typeof obj.count === "number" && Number.isFinite(obj.count) && obj.count >= 0) return obj.count;
       if (obj && Array.isArray(obj.tokens)) return obj.tokens.length;
       return null;
-    };
+    }, false); // the /tokenize flat prompt is not exact — keep the margin (§4.8).
   }
 
   // Google, Bedrock, and any other protocol: no bundled count capability (§11.7).

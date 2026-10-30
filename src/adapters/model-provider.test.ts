@@ -288,6 +288,22 @@ describe("ModelProviderAdapter (§11.2)", () => {
     expect(names2).toEqual(["main"]);
   });
 
+  it("countTokensFn declares exact per source: Anthropic true, OpenAI /tokenize false, plugin default false (§4.8)", () => {
+    // Bundled Anthropic count_tokens is exact.
+    const anth = config({ models: { a: { model: "claude", protocol: "anthropic", baseUrl: "http://127.0.0.1:1/v1", contextLimit: 1000 } }, modelSelected: "a" });
+    const mA = new ModelProviderAdapter(() => anth, vi.fn(), () => fakeModel());
+    expect(mA.countTokensFn()?.exact).toBe(true);
+    // Bundled OpenAI-compatible /tokenize is NOT exact.
+    const oai = config({ models: { a: { model: "m", protocol: "openai", baseUrl: "http://127.0.0.1:1/v1", contextLimit: 1000 } }, modelSelected: "a" });
+    const mO = new ModelProviderAdapter(() => oai, vi.fn(), () => fakeModel());
+    expect(mO.countTokensFn()?.exact).toBe(false);
+    // A plugin provider in object form that supplies countTokens defaults to NOT exact.
+    const plug = config({ models: { b: { model: "nova", protocol: "testprovider", contextLimit: 32_000 } }, modelSelected: "b" });
+    const mP = new ModelProviderAdapter(() => plug, vi.fn(), () => fakeModel());
+    mP.registerProvider("testprovider", { build: () => fakeModel(), countTokens: async () => 42 });
+    expect(mP.countTokensFn()?.exact).toBe(false);
+  });
+
   it("transientUtilityModel degrades to the selected endpoint when modelUtility names no entry — no failover (§11.6)", () => {
     const cfg = config({
       models: { main: { model: "mmain", protocol: "openai", contextLimit: 1000 } },

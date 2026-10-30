@@ -168,3 +168,12 @@ describe("bundledCountTokens — unset protocols (§11.7)", () => {
     expect(bundledCountTokens({ model: "x", protocol: "bedrock" })).toBeUndefined();
   });
 });
+
+describe("bundledCountTokens — the exact declaration (§4.8)", () => {
+  it("Anthropic count_tokens declares exact: true; the OpenAI /tokenize count is not exact", () => {
+    const anthropic = bundledCountTokens({ model: "claude", protocol: "anthropic", baseUrl: "http://127.0.0.1:1/v1" })!;
+    expect(anthropic.exact).toBe(true);
+    const openai = bundledCountTokens({ model: "m", protocol: "openai", baseUrl: "http://127.0.0.1:1/v1" })!;
+    expect(openai.exact).toBe(false);
+  });
+});

@@ -108,7 +108,13 @@ export class ModelProviderAdapter implements ModelPort {
     const provider = this.providers.get(resolved.protocol);
     if (provider && typeof provider !== "function" && provider.countTokens) {
       const ct = provider.countTokens.bind(provider);
-      return (messages, tools) => ct(entry, messages, tools);
+      // §4.8 — a plugin provider's count is NOT declared exact; it defaults to
+      // false, so the estimate margin is kept on it.
+      return Object.assign(
+        (messages: import("@langchain/core/messages").BaseMessage[], tools: import("../entities/tool-registry.js").ToolDefinition[]) =>
+          ct(entry, messages, tools),
+        { exact: false },
+      ) as CountTokensFn;
     }
     if (provider) return undefined; // a plugin function-form provider has no count
     return bundledCountTokens(entry);
