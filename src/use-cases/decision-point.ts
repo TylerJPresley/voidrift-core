@@ -48,6 +48,7 @@ import {
 } from "../entities/read-lane.js";
 import { type BaseMessage } from "@langchain/core/messages";
 import type { LoopHealth } from "../entities/loop-health.js";
+import { toolCounts } from "./tool-counts.js";
 
 /** Resolve a path's real location (symlinks followed) for the `rm -rf`
  * within-workdir symlink guard (§D1.4). Throws on a non-existent path so
@@ -913,19 +914,33 @@ export function createDecisionMiddleware(deps: DecisionPointDeps, ctx: CallerCon
             ...(final.name ? { name: final.name } : name ? { name } : {}),
             ...(final.artifact ? { artifact: final.artifact } : {}),
           });
+          // §3.3/§13.11 — the read lane reaches the user as ONE line. Compute
+          // the registry key that bit and its effective value FIRST, fold both
+          // facts into the single WARNING_EMITTED `message`, and keep exactly one
+          // LIMIT_HIT (the trail/audit record). The CLI suppresses the read-lane
+          // LIMIT_HIT's own `ℹ` line so the user is not told twice (session-review
+          // product finding 2); the LIMIT_HIT record itself is unchanged.
+          let laneFact = "";
+          if (deps.limits) {
+            const readCap = deps.limits.get("lane.readCallsPerTurn");
+            const hitKey = readLane.count >= readCap ? "lane.readCallsPerTurn" : "lane.readContextShare";
+            const hitValue = deps.limits.get(hitKey);
+            laneFact = ` (limits.${hitKey} = ${hitValue}; raise it in config)`;
+          }
           deps.bus.emit(
             "WARNING_EMITTED",
             {
               category: "read-lane",
               source: "reads",
               // §14.6 — carry a human `message` so the CLI renders a dim `ℹ`
-              // info line, never a bare category. One sentence, no secrets.
-              message: "Heavy direct reading this turn — consider delegating exploration to a worker batch (task).",
+              // info line, never a bare category. ONE sentence carrying BOTH the
+              // delegate nudge and the registry key/value to raise, no secrets.
+              message: `Heavy direct reading this turn — consider delegating exploration to a worker batch (task).${laneFact}`,
             },
             scope,
           );
-          // §13.11 — also record the LIMIT_HIT naming the registry key that bit
-          // (the note text is unchanged). The read-count threshold takes
+          // §13.11 — record the LIMIT_HIT naming the registry key that bit (the
+          // trail record stays, exactly one). The read-count threshold takes
           // precedence when both are at/over; else the context-share key.
           if (deps.limits) {
             const readCap = deps.limits.get("lane.readCallsPerTurn");
@@ -955,9 +970,27 @@ export function createDecisionMiddleware(deps: DecisionPointDeps, ctx: CallerCon
         }
       }
 
-      const summary = final instanceof ToolMessage ? String(final.content).slice(0, 500) : "";
+      const fullText = final instanceof ToolMessage ? String(final.content) : "";
+      const summary = fullText.slice(0, 500);
       const status = final instanceof ToolMessage && final.status === "error" ? "error" : "success";
-      bus.emit("TOOL_FINISHED", { id: toolCallId, name, status, durationMs: Date.now() - start, summary }, scope);
+      // §14.6 — carry honest counts computed from the FULL result (not the
+      // capped summary) so a client never undercounts a big result; counts only,
+      // no body (secrets never ride these numeric fields). The 500 is the SAME
+      // cap as the `summary` slice above (the @slice:500 trail clip, DP2).
+      const counts = final instanceof ToolMessage ? toolCounts(name, fullText, 500) : undefined;
+      bus.emit(
+        "TOOL_FINISHED",
+        {
+          id: toolCallId,
+          name,
+          status,
+          durationMs: Date.now() - start,
+          summary,
+          ...(counts ? { lines: counts.lines, truncated: counts.truncated } : {}),
+          ...(counts?.entries ? { entries: counts.entries } : {}),
+        },
+        scope,
+      );
       return final;
     },
   });

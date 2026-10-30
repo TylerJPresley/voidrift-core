@@ -63,6 +63,7 @@ import { METADATA_HOSTS_ID } from "../entities/never-list.js";
 import type { EventBus } from "../entities/event-bus.js";
 import type { Config, PermissionRule } from "../config/schema.js";
 import { maskSecrets, maskText } from "./secret-mask.js";
+import { contentHash } from "../entities/hash.js";
 import { sanitizeTrustedText } from "../entities/rollback.js";
 import { sessionNameMaxChars } from "../entities/ports/naming-port.js";
 import { limitDefault } from "../entities/limits.js";
@@ -886,7 +887,21 @@ export async function awaitMcpReadyBounded(ready: Promise<void>, graceMs: number
 }
 
 export class Engine {
-  constructor(private readonly deps: EngineDeps) {}  /** §10.7 — the generation-time clock (first-to-last streamed token), the
+  constructor(private readonly deps: EngineDeps) {}
+
+  /** §9.5 — the stable `requestId` minted the FIRST time a given `ask` suspends,
+   * keyed by `sessionId::hash(tool+args)`. A LangGraph `interrupt` RE-EXECUTES
+   * the node from its start on resume, so `ask()` runs twice per human answer;
+   * without this the second pass would mint a fresh id (`appr-2`) and emit a
+   * SECOND `PERMISSION_REQUESTED` a few seconds apart (one human ask → two audit
+   * rows). Caching the id across the replay makes one ask emit one
+   * `PERMISSION_REQUESTED` with one stable id that its `PERMISSION_RESOLVED`
+   * correlates to. At most one ask is in flight per session (the turn suspends
+   * on it), so a `sessionId::hash` key is unambiguous; it is cleared once the
+   * ask resolves. */
+  private readonly pendingAskIds = new Map<string, string>();
+
+  /** §10.7 — the generation-time clock (first-to-last streamed token), the
    * injected `now` or `Date.now`. Separate from the whole-turn wall clock so a
    * test can script generation deltas without perturbing the turn duration. */
   private now(): number {
@@ -1094,11 +1109,20 @@ export class Engine {
     exactOnly: boolean,
     segments?: import("../entities/guardian.js").SegmentVerdict[],
   ): ApprovalResponse {
-    const requestId = `appr-${++approvalSeq}`;
     // §6.8/§10.10 — the ONE seam where action args leave the process (approval
     // request + PERMISSION_REQUESTED). Slice 6/7 swaps the passthrough body of
     // maskSecrets for the real detector; the call site stays here.
     const safeArgs = maskSecrets(call.args);
+    // §9.5 — a STABLE id across the LangGraph `interrupt` replay. `interrupt`
+    // re-runs this node from the top on resume, so `ask()` executes twice for one
+    // human answer. Keying the id by `sessionId::hash(tool+args)` and caching it
+    // means the replay reuses the FIRST pass's id (so `PERMISSION_RESOLVED`,
+    // which carries that id, correlates) and the duplicate `PERMISSION_REQUESTED`
+    // is suppressed below — one ask, one requested row, one resolved row.
+    const askKey = `${session.id}::${contentHash(`${call.tool}\u0000${JSON.stringify(safeArgs)}`)}`;
+    const firstAnnounce = !this.pendingAskIds.has(askKey);
+    const requestId = this.pendingAskIds.get(askKey) ?? `appr-${++approvalSeq}`;
+    if (firstAnnounce) this.pendingAskIds.set(askKey, requestId);
     // Patterns are inferred from the raw command and can carry a secret the
     // same way `args` can, so they pass through the SAME mask before they
     // leave the process — both the host-facing PendingApproval and the
@@ -1120,11 +1144,15 @@ export class Engine {
       ...(forceAskKind ? { forceAsk: true, forceAskKind } : {}),
       ...(safeSegments && safeSegments.length > 0 ? { segments: safeSegments } : {}),
     };
-    this.deps.bus.emit(
-      "PERMISSION_REQUESTED",
-      { tool: call.tool, args: safeArgs, requestId, inferredPatterns: safePatterns },
-      { session: session.id },
-    );
+    // Emit PERMISSION_REQUESTED ONCE per ask (§9.5/§14.6): only on the first
+    // suspension, not on the `interrupt` replay that resumes it.
+    if (firstAnnounce) {
+      this.deps.bus.emit(
+        "PERMISSION_REQUESTED",
+        { tool: call.tool, args: safeArgs, requestId, inferredPatterns: safePatterns },
+        { session: session.id },
+      );
+    }
 
     // §2.5/§9.5 — an unresolved `ask` fails fast: the turn suspends with a
     // LangGraph `interrupt` the checkpointer persists, ending the run
@@ -1135,12 +1163,23 @@ export class Engine {
     // `out_of_band` suspends identically and `interactive` is resolved by the
     // host callback the facade drives after the suspension.
     const resume = interrupt({ pendingApproval: pending }) as ApprovalResponse | undefined;
+    // The ask has settled: drop the cached id so a LATER identical ask in the
+    // same session mints a fresh one (and announces again).
+    this.pendingAskIds.delete(askKey);
     if (!resume) return { requestId, decision: "reject" };
     this.deps.bus.emit(
       "PERMISSION_RESOLVED",
       {
         requestId: resume.requestId ?? requestId,
         decision: resume.decision,
+        // §9.5/§10.2/§14.6 — a resolution carries the FULL action (the masked
+        // tool and args, redacted EXACTLY as the correlated PERMISSION_REQUESTED)
+        // so a `permission_resolved` audit row names what was approved/edited/
+        // rejected instead of leaving `tool: ""` / `args: null`. The payload adds
+        // no new field shapes beyond §14.6's `{ requestId, decision, remember?,
+        // chosenPattern? }`; `tool`/`args` mirror the request's masked values.
+        tool: call.tool,
+        args: safeArgs,
         ...(resume.remember !== undefined ? { remember: resume.remember } : {}),
         ...(resume.chosenPattern !== undefined ? { chosenPattern: resume.chosenPattern } : {}),
       },
@@ -2659,9 +2698,26 @@ export class Engine {
         : chunkText(last.content)
       : "";
     const text = lastText || streamedText || "";
+    // §3.3/§9.5/§10.4 — the tools the turn CALLED, including a Guardian-denied
+    // call (a denial still NAMES its tool; the audit and `turn.complete` must not
+    // show `""`). A denied/edited call's ToolMessage may carry no `name`, so
+    // reconcile each tool result to the AIMessage tool_call that spawned it by
+    // its `tool_call_id` and recover the real tool name; only when neither the
+    // message nor any matching tool_call names it does it stay `""`.
+    const toolCallNames = new Map<string, string>();
+    for (const m of messages) {
+      if (m instanceof AIMessage) {
+        for (const tc of m.tool_calls ?? []) {
+          if (tc.id && tc.name) toolCallNames.set(tc.id, tc.name);
+        }
+      }
+    }
     const toolsUsed = messages
       .filter((m) => m.getType() === "tool")
-      .map((m) => (m as { name?: string }).name ?? "");
+      .map((m) => {
+        const tm = m as { name?: string; tool_call_id?: string };
+        return tm.name || (tm.tool_call_id ? toolCallNames.get(tm.tool_call_id) : undefined) || "";
+      });
 
     // §3.3 — limit wrap-up. The round middleware ended the loop at
     // `turnMaxToolRounds`: end the turn `limit_reached` but ALWAYS carry a

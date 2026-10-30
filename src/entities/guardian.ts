@@ -385,6 +385,81 @@ export function classifyCommand(
   return result;
 }
 
+/**
+ * The first-class tool that replaces a shell command word (§9.3): the spec's
+ * three default equivalents (`cat` → `read_file`, `grep` → `search_contents`,
+ * `find` → `glob_files`), plus the other local-exploration verbs a user may add
+ * to `shellEquivalents` (`ls`/`dir` → `glob_files`, `head`/`tail`/`less`/`more`
+ * → `read_file`, `rg`/`ag`/`ack` → `search_contents`). An unrecognized command word maps
+ * to the generic hint so the denial still tells the model to use a first-class
+ * tool. PURE; the leading word is read from the already-split SEGMENT, after
+ * stripping a binary path (`/bin/cat` → `cat`). */
+export function firstClassToolFor(segment: string): string {
+  const word = segment.trim().split(/\s+/)[0] ?? "";
+  const base = word.replace(/.*\//, "");
+  switch (base) {
+    case "cat":
+    case "head":
+    case "tail":
+    case "less":
+    case "more":
+      return "read_file";
+    case "find":
+    case "ls":
+    case "dir":
+      return "glob_files";
+    case "grep":
+    case "rg":
+    case "ag":
+    case "ack":
+      return "search_contents";
+    default:
+      return "a first-class tool";
+  }
+}
+
+/**
+ * Every TOP-LEVEL segment of a compound command that classifies `has-equivalent`
+ * (§9.3), each paired with the first-class tool to use instead. The compound
+ * denial lists ALL of them in one reason so the model fixes every redirectable
+ * fragment in one round, not one per denial (session-review product finding 1).
+ * PURE; bounded by the splitter (the command length is bounded by the Guardian
+ * command-length safety limit). A command with no redirectable fragment returns
+ * an empty array.
+ */
+export function hasEquivalentFragments(
+  command: string,
+  lists: ShellLists,
+): { segment: string; tool: string }[] {
+  const out: { segment: string; tool: string }[] = [];
+  for (const seg of splitSegments(command)) {
+    if (classifySegment(seg, lists) === "has-equivalent") {
+      out.push({ segment: seg, tool: firstClassToolFor(seg) });
+    }
+  }
+  return out;
+}
+
+/**
+ * The deny reason for a `has-equivalent` command (§9.3). When SEVERAL top-level
+ * fragments redirect, it lists EVERY one and the first-class tool for each in
+ * ONE reason so the model fixes them all in one round (session-review product
+ * finding 1): `use the first-class tool instead of: cat .gitignore ->
+ * read_file; find x -> glob_files`. With a SINGLE redirectable fragment the text
+ * is UNCHANGED from the prior single-fragment wording (`use the first-class tool
+ * instead of: cat f`) so the common case is byte-identical. Falls back to the
+ * raw `segment` when the splitter surfaces no top-level has-equivalent fragment
+ * (e.g. the hit was inside a substitution). PURE. */
+export function hasEquivalentReason(command: string, lists: ShellLists, segment: string): string {
+  const frags = hasEquivalentFragments(command, lists);
+  if (frags.length <= 1) {
+    const only = frags[0]?.segment ?? segment;
+    return `use the first-class tool instead of: ${only}`;
+  }
+  const list = frags.map((f) => `${f.segment} -> ${f.tool}`).join("; ");
+  return `use the first-class tool instead of: ${list}`;
+}
+
 /** One classified piece of a compound shell command (§6.1, §9.3). */
 export interface SegmentVerdict {
   text: string;
@@ -862,7 +937,7 @@ export class Guardian {
           return this.exactLiftOutcome(shellLift);
         }
       } else if (cls === "has-equivalent") {
-        return { decision: "deny", forceAsk: false, reason: `use the first-class tool instead of: ${segment}` };
+        return { decision: "deny", forceAsk: false, reason: hasEquivalentReason(command, lists, segment) };
       } else if (cls === "safe") {
         return { decision: "allow", forceAsk: false };
       }

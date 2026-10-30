@@ -447,6 +447,34 @@ describe("Engine decision point (§9.1)", () => {
     expect(starts).toContain("read_file");
     expect(finishes).toContain("read_file");
   });
+
+  it("§14.6 a real glob_files over 60 files emits TOOL_FINISHED.lines=60", async () => {
+    // Given — 60 real files in the workspace so glob '*' returns 60 entries,
+    // the exact shape of the reproduced bug (a big result the summary caps).
+    for (let i = 0; i < 60; i++) await fs.writeFile(path.join(ws, `f${i}.txt`), "x");
+    const script = () =>
+      fakeModel()
+        .respondWithTools([{ name: "glob_files", args: { pattern: "f*.txt" } }])
+        .respond(new AIMessage("globbed"));
+    const { api } = await trackedCreateCore({
+      workspaceRoot: ws,
+      configStore: new InMemoryConfigStore(seed),
+      sessionRepository: new InMemorySessionRepository(),
+      chatModelFactory: factory(script),
+    });
+    let finished: { name: string; lines?: number } | undefined;
+    api.events.subscribe("TOOL_FINISHED", (e) => {
+      const p = e.payload as { name: string; lines?: number };
+      if (p.name === "glob_files") finished = p;
+    });
+    const created = await api.session.create({});
+    const id = created.ok ? created.value.id : "";
+    const res = await api.session.send(id, { input: "glob all" });
+    expect(res.ok).toBe(true);
+    // The event counts the FULL result, not the capped summary.
+    // MUTATION: counting the 500-char summary would report far fewer than 60.
+    expect(finished?.lines).toBe(60);
+  });
 });
 
 describe("Engine wired directly (§9.1 Warden-first, §9.5 edit)", () => {

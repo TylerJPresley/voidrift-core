@@ -1143,7 +1143,11 @@ export function traceAnalyzerMessage(pattern: string, count: number): string {
   const tool = colon >= 0 ? pattern.slice(colon + 1) : "";
   const display = toolDisplayName(tool);
   if (kind === "guardian_block") {
-    return `Repeated block: ${display} was denied ${count}× — a guard or a different approach may help; review with /memory.`;
+    // §10.6 — a guardian_block repeat is a PERMISSION denial, not a loop the
+    // user resolves in `/memory` (session-review product finding 3). The
+    // suggestion names what happened and what actually helps; it does NOT send
+    // the user to `/memory` (unrelated to a guard denial).
+    return `${display} was denied ${count}× by the permission guard; use the first-class tools (read_file, glob_files, search) or ask for approval.`;
   }
   return `Repeated failure: ${display} failed ${count}× — a guard or a different approach may help; review with /memory.`;
 }
