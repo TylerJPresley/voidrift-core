@@ -113,7 +113,7 @@ audit/restore guarantee, so lowering it from an untrusted project config is igno
 | `memory.projectChars` | chars | tunable | Project-instructions head bound (AGENTS.md etc.); explicit override of the ingest.fitFraction fit test. |
 | `memory.reflectionBatchSize` | count | tunable | Reflection batch size. |
 | `memory.indexCapPct` | ratio | tunable | Memory index cap as a share of the context window. |
-| `memory.projectDigestMaxChars` | chars | tunable | Project-context digest length in the head. |
+| `memory.projectDigestMaxChars` | chars | tunable | Project-context structural head digest length (owner-set 2000; 14/16 real AGENTS.md fit fully); the per-section sentence allowance is derived from this (floor(maxChars / sectionCount)), not a separate key; the full body rides the session-cache pointer. |
 | `memory.sequenceMaxLen` | count | tunable | Longest repeated tool sequence the detector matches. |
 | `memory.evidencePacketMaxChars` | chars | tunable | Skill-draft evidence-packet cap. |
 | `memory.sequenceEvidenceFraction` | ratio | tunable | Sequence evidence-packet cap as a fraction of the context window. |

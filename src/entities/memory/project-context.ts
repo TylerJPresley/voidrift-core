@@ -90,6 +90,218 @@ export function deriveDigest(full: string, maxChars = limitDefault("memory.proje
   return digest;
 }
 
+/** Cap a snippet at `max`, adding an ellipsis when cut. */
+function cap(text: string, max: number): string {
+  const t = text.trim();
+  return t.length <= max ? t : t.slice(0, max - 1).trimEnd() + "…";
+}
+
+/** The end index (exclusive) of the Nth sentence in `text`, or the end of the
+ * string when there are fewer than `n` sentence boundaries. A boundary is a
+ * sentence-ending `.`, `!` or `?` followed by whitespace or the end of the text.
+ * AGENTS.md is hard-wrapped, so the paragraph's lines are already joined with
+ * spaces before this runs; a wrap that split mid-sentence is thus healed. */
+function sentenceEnd(text: string, n: number): number {
+  let count = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch !== "." && ch !== "!" && ch !== "?") continue;
+    const next = text[i + 1];
+    if (next === undefined || next === " " || next === "\t") {
+      count++;
+      if (count === n) return i + 1;
+    }
+  }
+  return text.length;
+}
+
+/** The first sentence of a paragraph, UNCAPPED. The paragraph's wrapped lines
+ * are joined with spaces first so a sentence split across a hard wrap is
+ * rejoined (the OLD first-LINE behaviour returned a fragment such as
+ * "…Start the"). The caller caps it to the section's derived share. */
+function firstSentence(paragraph: string): string {
+  const joined = paragraph
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l !== "")
+    .join(" ")
+    .trim();
+  return joined.slice(0, sentenceEnd(joined, 1)).trim();
+}
+
+/**
+ * Derive the GENERIC STRUCTURAL head digest for project instructions (§4.2.1
+ * tier 2): the lead paragraph before the first heading (treated as an ordinary
+ * first section — reduced to its first sentence), then every Markdown heading in
+ * DOCUMENT ORDER, each followed by the FIRST SENTENCE of its section's first
+ * paragraph — or, for a list-item section, its first item. Because real
+ * `AGENTS.md` files are hard-wrapped, a section's wrapped lines are joined with
+ * spaces before the sentence is cut, so the snippet is a whole sentence, not a
+ * fragment ("…Start the"). This is a REAL digest — a deterministic, no-model,
+ * project-neutral reduction that relocates (never drops) the body: the full copy
+ * always rides the session-cache pointer. No wording is hard-coded, so the
+ * digest works for any `AGENTS.md`, not just this project's.
+ *
+ * The per-section sentence allowance is DERIVED from the single budget
+ * `maxChars` (default `memory.projectDigestMaxChars`), not a separate constant:
+ * each section (the pre-heading text counts as one) gets an equal share,
+ * `share = floor(maxChars / sectionCount)`, and its sentence is cut to
+ * `share − heading length − separators` (ellipsis when cut). Fewer sections →
+ * larger share → longer sentences; more sections → tighter sentences. Unspent
+ * share from a short sentence is not redistributed (kept simple). When the full
+ * digest fits, entries are emitted in DOCUMENT ORDER (lead, then each heading +
+ * first-sentence). Over budget (very many sections), a priority fill keeps the
+ * MAP intact first: all headings (in order), then the first-sentences (in
+ * order), then the lead paragraph fills whatever remains.
+ */
+export function projectDigest(full: string, maxChars = limitDefault("memory.projectDigestMaxChars")): string {
+  const rawLines = full.split("\n");
+  const isHeading = (s: string): boolean => /^#{1,6}\s+\S/.test(s);
+
+  // The lead paragraph: the first run of non-empty lines BEFORE the first
+  // heading, treated as an ordinary first section — its FIRST sentence joined
+  // across hard wraps (uncapped here; the per-section share caps it below).
+  // Hard-wrapped Markdown makes the first LINE a fragment, so the paragraph is
+  // joined and cut at a sentence boundary instead.
+  const lead: string[] = [];
+  for (const line of rawLines) {
+    const trimmed = line.trim();
+    if (isHeading(trimmed)) break;
+    if (trimmed === "") {
+      if (lead.length > 0) break;
+      continue;
+    }
+    lead.push(trimmed);
+  }
+  const leadRaw = lead.length === 0 ? "" : firstSentence(lead.join("\n"));
+
+  // Each heading in document order, paired with the FIRST SENTENCE of its
+  // section's first paragraph (or, when the section opens with a list, the first
+  // list item), joined across hard wraps (uncapped; capped by the share below).
+  interface Section {
+    heading: string;
+    /** The uncapped joined first sentence / first list item of the section. */
+    firstRaw: string;
+  }
+  const isListItem = (s: string): boolean => /^(?:[-*+]\s+|\d+[.)]\s+)/.test(s);
+  const stripMarker = (s: string): string => s.replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, "");
+  const sections: Section[] = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    const trimmed = (rawLines[i] ?? "").trim();
+    if (!isHeading(trimmed)) continue;
+    // Find the first non-empty, non-heading line after the heading.
+    let start = -1;
+    for (let j = i + 1; j < rawLines.length; j++) {
+      const t = (rawLines[j] ?? "").trim();
+      if (isHeading(t)) break;
+      if (t !== "") {
+        start = j;
+        break;
+      }
+    }
+    let firstRaw = "";
+    if (start !== -1) {
+      const startLine = (rawLines[start] ?? "").trim();
+      if (isListItem(startLine)) {
+        // A list-item section: the first item, including its wrapped
+        // continuation lines (indented or plain, until the next item or blank).
+        const parts = [stripMarker(startLine)];
+        for (let j = start + 1; j < rawLines.length; j++) {
+          const raw = rawLines[j] ?? "";
+          const t = raw.trim();
+          if (t === "" || isHeading(t) || isListItem(t)) break;
+          parts.push(t);
+        }
+        firstRaw = parts.join(" ").trim();
+      } else {
+        // A prose section: the first paragraph (lines until a blank, heading or
+        // list), reduced to its first sentence.
+        const parts: string[] = [];
+        for (let j = start; j < rawLines.length; j++) {
+          const raw = rawLines[j] ?? "";
+          const t = raw.trim();
+          if (t === "" || isHeading(t) || isListItem(t)) break;
+          parts.push(t);
+        }
+        firstRaw = firstSentence(parts.join("\n"));
+      }
+    }
+    sections.push({ heading: trimmed, firstRaw });
+  }
+
+  // Derive the per-section sentence allowance from the ONE budget. Every section
+  // (the pre-heading lead counts as one when present) gets an equal share of the
+  // budget; its sentence is cut to the share less the heading and the entry's
+  // separators. SEP is the two structural separators an entry spends: the "\n"
+  // between a heading and its sentence and the "\n\n" that joins entries — a
+  // formatting literal, not a tunable content bound.
+  const sectionCount = sections.length + (leadRaw !== "" ? 1 : 0);
+  const SEP = 2;
+  const share = sectionCount === 0 ? maxChars : Math.floor(maxChars / sectionCount);
+  const leadParagraph = leadRaw === "" ? "" : cap(leadRaw, Math.max(0, share - SEP));
+  const capped = sections.map((s) => {
+    if (s.firstRaw === "") return { heading: s.heading, first: "" };
+    const budget = share - s.heading.length - SEP;
+    return { heading: s.heading, first: budget > 0 ? cap(s.firstRaw, budget) : "" };
+  });
+
+  // No structure at all (no headings, no lead): fall back to leading lines.
+  if (sections.length === 0 && leadParagraph === "") {
+    return deriveDigest(full, maxChars);
+  }
+
+  // Entries in DOCUMENT ORDER: the lead paragraph, then each heading with its
+  // first line beneath it.
+  const inOrder: string[] = [];
+  if (leadParagraph !== "") inOrder.push(leadParagraph);
+  for (const s of capped) inOrder.push(s.first !== "" ? `${s.heading}\n${s.first}` : s.heading);
+
+  const whole = inOrder.join("\n\n");
+  if (whole.length <= maxChars) return whole;
+
+  // Over budget: keep the MAP first. Fill headings (in order), then
+  // first-sentences (in order), then the lead. Entries render in document order
+  // regardless of fill priority, so the head always reads top-to-bottom.
+  const chosenHeading = new Array<boolean>(capped.length).fill(false);
+  const chosenFirst = new Array<boolean>(capped.length).fill(false);
+  let chosenLead = false;
+
+  const render = (): string => {
+    const parts: string[] = [];
+    if (chosenLead) parts.push(leadParagraph);
+    for (let i = 0; i < capped.length; i++) {
+      const s = capped[i];
+      if (!s || !chosenHeading[i]) continue;
+      parts.push(chosenFirst[i] && s.first !== "" ? `${s.heading}\n${s.first}` : s.heading);
+    }
+    return parts.join("\n\n");
+  };
+
+  // Priority 1: headings, in order.
+  for (let i = 0; i < capped.length; i++) {
+    chosenHeading[i] = true;
+    if (render().length > maxChars) {
+      chosenHeading[i] = false;
+      break;
+    }
+  }
+  // Priority 2: first-sentences, in order (only for headings already chosen).
+  for (let i = 0; i < capped.length; i++) {
+    const s = capped[i];
+    if (!s || !chosenHeading[i] || s.first === "") continue;
+    chosenFirst[i] = true;
+    if (render().length > maxChars) chosenFirst[i] = false;
+  }
+  // Priority 3: the lead paragraph fills whatever remains.
+  if (leadParagraph !== "") {
+    chosenLead = true;
+    if (render().length > maxChars) chosenLead = false;
+  }
+
+  const digest = render();
+  return digest.trim() !== "" ? digest : deriveDigest(full, maxChars);
+}
+
 /**
  * Merge discovered files most-specific-last (§6.6), keeping the WHOLE content —
  * never cut (§4.8/§8.7). Each file is separated by a header naming its path
@@ -103,14 +315,26 @@ export function mergeFull(files: ProjectFile[]): string {
 
 /**
  * Assemble the project context against the head budget (§4.8/§8.7). The full
- * merged text is kept whole. When it fits within `budgetChars`, the whole text
- * rides the head. When it does not, the head carries `cachedDigest` (the ingest
- * digest, when one exists) or a marked head of the content up to the budget,
- * each with the overflow marker naming `limits.ingest.fitFraction`.
+ * merged text is always kept whole (the session-cache pointer carries it). The
+ * HEAD always carries a REAL digest — a deterministic structural reduction
+ * (headings + the key rule lines + a short lead paragraph, `projectDigest`) —
+ * never the full body, so project instructions cost a bounded, small head every
+ * turn while the exact wording is one `read_file` away (§4.2.1 tier 2). When the
+ * content exceeds the budget it is additionally flagged `overflow` and the head
+ * carries `cachedDigest` (the §8.7 ingest digest, when one exists) or a marked
+ * head up to the budget, each with the overflow marker naming
+ * `limits.ingest.fitFraction`.
  *
- * `cachedDigest` is null on the FIRST turn (no digest cached yet): the head then
- * carries the marked head and the caller kicks the ingest in the background so
- * the next turn hits the cache. The head is NEVER blocked on a worker fan-out.
+ * `truncated` is true whenever the head is a reduced digest (so the caller's
+ * label reads "digest — full file via read_file"); `overflow` is true only when
+ * the content exceeded the budget (so the caller fires the LIMIT_HIT). The two
+ * are now distinct: a file that fits the budget still rides as a digest, with no
+ * overflow warning.
+ *
+ * `cachedDigest` is null on the FIRST overflow turn (no ingest digest cached
+ * yet): the head then carries the marked head (content up to the budget) and the
+ * caller kicks the ingest in the background so the next turn hits the cache. The
+ * head is NEVER blocked on a worker fan-out.
  */
 export function assembleProjectHead(
   files: ProjectFile[],
@@ -120,7 +344,10 @@ export function assembleProjectHead(
   const full = mergeFull(files);
   const hash = contentHash(full);
   if (full.length <= budgetChars) {
-    return { full, digest: full, truncated: false, limit: budgetChars, overflow: false, hash };
+    // Fits the budget, but the head still carries a REAL structural digest, not
+    // the whole body — the full copy rides the session-cache pointer (§4.2.1).
+    const digest = projectDigest(full);
+    return { full, digest, truncated: true, limit: budgetChars, overflow: false, hash };
   }
   let head: string;
   if (cachedDigest && cachedDigest.trim() !== "") {

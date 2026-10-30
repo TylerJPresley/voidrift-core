@@ -56,6 +56,16 @@ describe("limits registry (§13.11)", () => {
     expect(limitDefault("ingest.fitFraction")).toBe(0.4);
     expect(limitDefault("ingest.digestTokens")).toBe(1200);
   });
+
+  it("registers the project-digest budget with an evidence-backed default and bounds", () => {
+    // Owner decision: budget 2000 (14/16 real AGENTS.md fit fully). The
+    // per-section sentence allowance is DERIVED from this single budget
+    // (floor(maxChars / sectionCount)), so there is no separate sentence-cap key.
+    const max = getLimitSpec("memory.projectDigestMaxChars");
+    expect(max).toMatchObject({ default: 2000, unit: "chars", class: "tunable", action: "warn", min: 1 });
+    expect(typeof max?.noLiveOverride).toBe("string");
+    expect(getLimitSpec("memory.projectDigestSentenceChars")).toBeUndefined();
+  });
 });
 
 describe("effectiveIngestParallel (§8.7)", () => {

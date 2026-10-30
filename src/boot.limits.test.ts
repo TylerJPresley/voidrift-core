@@ -71,7 +71,7 @@ describe("createCore limits wiring (§13.11)", () => {
     await fs.writeFile("AGENTS.md", "x".repeat(400));
     const { api } = await boot(fs, { memory: { projectChars: 8000 } });
     const mem = (api as unknown as { deps: { memory: Memory } }).deps.memory;
-    expect((await mem.projectContext()).truncated).toBe(false);
+    expect((await mem.projectContext()).overflow).toBe(false);
     // Lower the bound via the config capability (session overlay) and re-resolve.
     const cfg = (api as unknown as { deps: { config: { setProcessOverlay: (o: Record<string, unknown>) => void } } }).deps.config;
     cfg.setProcessOverlay({ limits: { memory: { projectChars: 50 } } });

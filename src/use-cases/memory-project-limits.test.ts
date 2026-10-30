@@ -107,12 +107,14 @@ describe("§6.6/§4.8/§8.7 — fit-fraction head budget and non-blocking digest
     expect(ctx.digest).toContain("limits.ingest.fitFraction");
   });
 
-  it("the SAME 10.4k AGENTS.md on a 32k window loads WHOLE (no overflow)", async () => {
-    // budget = 0.4 × 32768 × 4 ≈ 52428 chars > 10400 → whole.
+  it("the SAME 10.4k AGENTS.md on a 32k window fits (no overflow) but rides a reduced head digest", async () => {
+    // budget = 0.4 × 32768 × 4 ≈ 52428 chars > 10400 → fits, no overflow. The
+    // head still carries a REAL digest, not the whole body (§4.2.1 tier 2).
     const mem = new Memory(makeFractionDeps(bigAgents, 32768));
     const ctx = await mem.projectContext();
     expect(ctx.overflow).toBe(false);
-    expect(ctx.digest).toBe(ctx.full);
+    expect(ctx.full).toContain("A".repeat(10_400));
+    expect(ctx.digest.length).toBeLessThan(ctx.full.length);
     expect(ctx.digest).not.toContain(PROJECT_OVERFLOW_MARKER);
   });
 
