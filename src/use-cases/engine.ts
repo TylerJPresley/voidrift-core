@@ -92,9 +92,9 @@ import {
   type ContextOverflow,
   type OverflowSource,
 } from "../entities/context/model-guard.js";
-import { estimateTokens } from "../entities/context/budget.js";
+import { estimateTokens, CHARS_PER_TOKEN } from "../entities/context/budget.js";
 import { CoreErrorException, coreError, ErrorCode, type Result } from "../entities/errors.js";
-import { classifyModelError } from "../entities/model-error.js";
+import { createModelNetworkMiddleware } from "./model-network-middleware.js";
 import { toolMatchesAgentList, TASK_TOOL_NAME, type AgentDefinition } from "../entities/subagents.js";
 import { LoopHealth, type LoopHealthLimits } from "../entities/loop-health.js";
 import { ToolRoundCounter, deriveRecursionLimit, limitSummary, limitNotice } from "../entities/tool-round.js";
@@ -547,20 +547,11 @@ function extractTurnUsage(messages: BaseMessage[]): {
 }
 
 /**
- * A sentinel thrown by the model-retry middleware when a model call has
- * definitively failed (budget exhausted or non-retryable) AND the middleware has
- * already emitted `MODEL_ERROR` and `ERROR_OCCURRED` `{ source: "model" }`. It
- * tells `runTurn` to end the turn `failed` without emitting a second,
- * engine-sourced `ERROR_OCCURRED` (§3.6, §11.9).
+ * `ModelCallFailed` and the retry/first-byte-watchdog loop now live in the ONE
+ * shared `model-network-middleware` (§11.5): imported here so the orchestrator,
+ * every worker and the internal reviewer throw the SAME sentinel and
+ * `modelFailureMessage` recognizes it everywhere.
  */
-class ModelCallFailed extends Error {
-  /** A stable marker so a LangGraph-wrapped instance is still recognizable. */
-  readonly isModelCallFailed = true as const;
-  constructor(message: string) {
-    super(message);
-    this.name = "ModelCallFailed";
-  }
-}
 
 /**
  * Recognize a model failure even after LangGraph re-wraps the thrown error:
@@ -623,26 +614,9 @@ function isAbortError(err: unknown): boolean {
 }
 
 /**
- * §3.3/§5.2 — a backoff sleep that wakes the instant the turn's shared
- * `AbortSignal` fires. Resolves normally after `ms`; rejects with an
- * `AbortError` on cancel. Always clears the timer and removes the listener so a
- * cancel never leaves a pending timer or a dangling subscription (bounded, no
- * leaked timers). An already-aborted signal rejects synchronously.
+ * §3.3/§5.2 — the abortable backoff sleep now lives in the shared
+ * `model-network-middleware` (§11.5), with the retry loop it serves.
  */
-function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) return Promise.reject(new DOMException("The operation was aborted", "AbortError"));
-  return new Promise<void>((resolve, reject) => {
-    const onAbort = (): void => {
-      clearTimeout(timer);
-      reject(new DOMException("The operation was aborted", "AbortError"));
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
-    }, ms);
-    signal?.addEventListener("abort", onAbort, { once: true });
-  });
-}
 
 let approvalSeq = 0;
 
@@ -1707,66 +1681,20 @@ export class Engine {
   }
 
   private retryMiddleware(session: Session) {
-    const { bus, modelName } = this.deps;
-    return createMiddleware({
-      name: "voidrift-model-retry",
-      wrapModelCall: async (request, handler) => {
-        const maxRetries = Math.max(0, this.deps.getConfig().networkModelMaxRetries);
-        // §3.3/§5.2 — the turn's single shared AbortSignal (threaded as
-        // `config.signal` and surfaced on the middleware runtime). A cancel must
-        // stop the retry loop AND its backoff immediately: a deliberate abort is
-        // never retried, and the backoff sleep wakes the instant it fires.
-        const signal = (request as { runtime?: { signal?: AbortSignal } }).runtime?.signal;
-        let attempt = 0;
-        for (;;) {
-          attempt += 1;
-          // A cancel that landed before this attempt: fail fast, no model call.
-          if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError");
-          try {
-            return await handler(request);
-          } catch (e) {
-            // §3.3 — a deliberate cancel is NOT a retryable model error; rethrow
-            // it so `runTurn`/`confirm` end the turn `cancelled` (no MODEL_ERROR,
-            // no backoff, no re-issue to a now-cancelled endpoint).
-            if (isAbortError(e) || signal?.aborted) throw e;
-            const cls = classifyModelError(e);
-            const willRetry = cls.retryable && attempt <= maxRetries;
-            bus.emit(
-              "MODEL_ERROR",
-              {
-                name: modelName,
-                code: cls.code,
-                // §10.10 — the event bus is an egress; a provider/proxy error
-                // body can echo the request (Authorization: Bearer …, api key).
-                // Mask at the core emit site through the ONE shared detector so
-                // every subscriber (exporters, logs, other clients) is covered,
-                // not only the CLI render path.
-                message: maskText(e instanceof Error ? e.message : String(e)),
-                retryable: cls.retryable,
-                attempt,
-                willRetry,
-                // The retry budget, so a client can show `attempt/total` without
-                // reading config (§3.6). `maxRetries` retries follow the first
-                // try, so the total number of attempts is `maxRetries + 1`.
-                maxRetries,
-              },
-              { session: session.id },
-            );
-            if (!willRetry) {
-              // The message rides into ERROR_OCCURRED { source: "model" } via
-              // modelFailureMessage; mask it here so the raw provider body never
-              // reaches that egress either (§10.10).
-              throw new ModelCallFailed(maskText(e instanceof Error ? e.message : String(e)));
-            }
-            // Bounded exponential backoff with a low ceiling so a retryable
-            // failure gives up in seconds, not minutes (§3.6). The sleep is
-            // abortable: a `session.cancel` during backoff wakes it at once and
-            // throws so the turn ends `cancelled` with no further re-issue.
-            const delay = Math.min(1000 * 2 ** (attempt - 1), 4000);
-            await abortableSleep(delay, signal);
-          }
-        }
-      },
+    // §11.5 — delegate to the ONE shared model-network middleware (retry +
+    // first-byte watchdog). The engine, every worker and the internal reviewer
+    // use this same factory (DRY), so retry semantics, `MODEL_ERROR` and the
+    // watchdog are identical across all three. The watchdog allowance is driven
+    // by the §4.8 ratio-based estimate of THIS request's input tokens.
+    return createModelNetworkMiddleware({
+      bus: this.deps.bus,
+      modelName: this.deps.modelName,
+      sessionId: session.id,
+      getMaxRetries: () => this.deps.getConfig().networkModelMaxRetries,
+      getFloorMs: () => this.deps.getConfig().networkModelTimeout,
+      estimateInputTokens: (messages) =>
+        Math.ceil(messages.reduce((n, m) => n + messageChars(m), 0) / CHARS_PER_TOKEN),
+      mask: maskText,
     });
   }
 

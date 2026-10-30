@@ -67,6 +67,8 @@ import type { HttpPort } from "../entities/ports/http-port.js";
 import type { FileSystemPort } from "../entities/ports/host.js";
 import type { ProviderHandler } from "./web-search.js";
 import { maskSecrets, maskText } from "./secret-mask.js";
+import { createModelNetworkMiddleware } from "./model-network-middleware.js";
+import { CHARS_PER_TOKEN } from "../entities/context/budget.js";
 import { resolveRules } from "./engine.js";
 import { hostAllowedByExact } from "../entities/exact-allow.js";
 import { METADATA_HOSTS_ID } from "../entities/never-list.js";
@@ -325,6 +327,13 @@ interface LiveWorker {
 
 /** The §8.2 shell tool a staged worker cannot hold (§7.4 no-shell limit, D5). */
 const SHELL_TOOL = "execute_command";
+
+/** §4.8/§11.5 — the character count of one message's content, the numerator of
+ * the worker watchdog's input estimate. A content-block message is counted by
+ * its serialized text; a plain string by its length. */
+function workerMessageChars(m: BaseMessage): number {
+  return typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length;
+}
 
 /**
  * §3.3/§7.2 — the per-invocation tool-round state for a dispatched worker. The
@@ -962,6 +971,13 @@ export class Subagents {
     // (its single verdict never hits the budget).
     const middleware = [
       this.overflowMiddleware(ctx.workerId),
+      // §7.2/§11.5 — the SAME shared model-network middleware the orchestrator
+      // uses (retry + first-byte watchdog, `MODEL_ERROR` scoped to THIS worker).
+      // Before this a worker died on the first model error (observed: a first-byte
+      // stall at ~120 s on a ~92k-token request); now a worker retries a
+      // retryable failure and the watchdog bounds the first token (DRY: one
+      // factory for orchestrator, worker and the internal reviewer).
+      this.workerNetworkMiddleware(def, ctx),
       ...(roundState ? [this.workerRoundMiddleware(roundState)] : []),
       this.workerUsageMiddleware(def, ctx),
       this.workerToolStatusMiddleware(ctx.workerId),
@@ -1093,6 +1109,26 @@ export class Subagents {
       },
     };
     return createMiddleware(spec as Parameters<typeof createMiddleware>[0]);
+  }
+
+  /** §7.2/§11.5 — the worker's model-network middleware, built from the ONE
+   * shared factory the orchestrator uses (retry + first-byte watchdog). The
+   * `MODEL_ERROR` is scoped to THIS worker's session id (`ctx.workerId`) so a
+   * client attributes a retry/failure to the worker, not the parent. The
+   * watchdog allowance is driven by the §4.8 ratio-based estimate of the
+   * request's input tokens (counted at the fallback 4 chars/token here). */
+  private workerNetworkMiddleware(def: AgentDefinition, ctx: { workerId: string; worker?: string }) {
+    const modelName = def.model ?? this.deps.getConfig().modelSelected ?? "(worker)";
+    return createModelNetworkMiddleware({
+      bus: this.deps.bus,
+      modelName,
+      sessionId: ctx.workerId,
+      getMaxRetries: () => this.deps.getConfig().networkModelMaxRetries,
+      getFloorMs: () => this.deps.getConfig().networkModelTimeout,
+      estimateInputTokens: (messages) =>
+        Math.ceil(messages.reduce((n, m) => n + workerMessageChars(m), 0) / CHARS_PER_TOKEN),
+      mask: maskText,
+    });
   }
 
   /** §10.14/§10.7 — a `wrapModelCall` middleware that emits ONE `MODEL_USAGE`
