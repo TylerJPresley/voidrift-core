@@ -57,7 +57,7 @@ export const ModelConfigEntrySchema = z
     contextActiveBudgetPct: z.number().int().positive().optional(),
     contextCompactionPct: z.number().int().positive().optional(),
     contextSafetyNetPct: z.number().int().positive().optional(),
-    contextHeadBudgetPct: z.number().int().positive().optional(),
+    contextHeadWarnPct: z.number().int().positive().optional(),
     contextNoticePcts: z.array(z.number().int().positive()).optional(),
   })
   .loose() // preserve unknown tuning keys (§11.3)
@@ -597,18 +597,18 @@ export const ConfigSchema = z
     snapshotCount: z.number().int().min(0).max(500).default(50),
 
     // Context sizing by percentages (§4.8). The three working-budget triggers,
-    // the head cap (a share of the window), and extra notice bands. All cascade
-    // global → project → session and take a per-endpoint override (§4.8).
+    // the head WARNING threshold (a share of the window — not a cap, §4.2.1),
+    // and extra notice bands. All cascade global → project → session and take a
+    // per-endpoint override (§4.8).
     contextActiveBudgetPct: z.number().int().positive().default(20),
     contextCompactionPct: z.number().int().positive().default(40),
     contextSafetyNetPct: z.number().int().positive().default(80),
-    contextHeadBudgetPct: z.number().int().positive().default(10),
+    contextHeadWarnPct: z.number().int().positive().default(20),
     contextNoticePcts: z.array(z.number().int().positive()).default([]),
 
     // Memory bounds and reflection (§6.3, §6.7). All cascade global → project →
     // session like every other key; a bounded write over the limit is rejected.
     memoryMaxEntryChars: z.number().int().positive().default(2200),
-    memoryMaxProjectChars: z.number().int().positive().default(8000),
     memoryReflectionBatchSize: z.number().int().positive().default(3),
 
     // The single `limits` registry section (§13.11). Nested by area and
@@ -721,10 +721,9 @@ export const SESSION_OVERRIDABLE_KEYS = [
   "contextActiveBudgetPct",
   "contextCompactionPct",
   "contextSafetyNetPct",
-  "contextHeadBudgetPct",
+  "contextHeadWarnPct",
   "contextNoticePcts",
   "memoryMaxEntryChars",
-  "memoryMaxProjectChars",
   "memoryReflectionBatchSize",
 ] as const;
 

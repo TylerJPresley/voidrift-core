@@ -529,9 +529,8 @@ export class ConfigCapability {
   /**
    * The source LAYER a registry limit's effective value came from (§13.11):
    * `"default"` when no layer set it, else the winning layer. Used to tell an
-   * EXPLICIT configuration (`memory.projectChars`) apart from the registry
-   * default so project-context sizing can fall back to `ingest.fitFraction`.
-   * Throws on an unknown key.
+   * EXPLICIT configuration apart from the registry default. Throws on an unknown
+   * key.
    */
   limitSource(key: string): "managed" | "global" | "project" | "session" | "default" {
     const resolved = resolveLimits(this.limitLayers());

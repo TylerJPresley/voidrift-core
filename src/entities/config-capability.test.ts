@@ -651,12 +651,12 @@ describe("ConfigCapability (§13)", () => {
   describe("limits view and layers (§13.11)", () => {
     it("limitsView lists every registry key with value, unit, class and source", async () => {
       const { cap } = make({
-        global: { limits: { memory: { projectChars: 6000 } } },
-        project: { limits: { memory: { projectChars: 4000 } } },
+        global: { limits: { memory: { entryChars: 6000 } } },
+        project: { limits: { memory: { entryChars: 4000 } } },
       });
       await cap.load();
       const { limits } = cap.limitsView();
-      const mem = limits.find((l) => l.key === "memory.projectChars")!;
+      const mem = limits.find((l) => l.key === "memory.entryChars")!;
       expect(mem.value).toBe(4000);
       expect(mem.source).toBe("project");
       expect(mem.sourcePath).toBe("memory://project");
@@ -696,14 +696,14 @@ describe("ConfigCapability (§13)", () => {
     });
 
     it("emits CONFIG_RESOLVED on every successful resolve so limits can re-resolve", async () => {
-      const { cap, emit } = make({ global: { limits: { memory: { projectChars: 6000 } } } });
+      const { cap, emit } = make({ global: { limits: { memory: { entryChars: 6000 } } } });
       await cap.load();
       expect(emit).toHaveBeenCalledWith("CONFIG_RESOLVED", {});
     });
 
     it("limitLayers returns each present layer's limits with its file path", async () => {
       const { cap } = make({
-        global: { limits: { memory: { projectChars: 6000 } } },
+        global: { limits: { memory: { entryChars: 6000 } } },
         project: { limits: { tools: { commandTimeoutMs: 1000 } } },
       });
       await cap.load();

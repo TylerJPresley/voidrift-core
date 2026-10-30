@@ -36,7 +36,7 @@ import { emptySnapshot, type ContextSnapshot, type EnvironmentFacts } from "./en
 import { Session, type SessionMetadata } from "./entities/session.js";
 import { EventBus } from "./entities/event-bus.js";
 import { anthropicPromptCachingMiddleware } from "langchain";
-import type { SizingPercents } from "./entities/context/budget.js";
+import { CHARS_PER_TOKEN, type SizingPercents } from "./entities/context/budget.js";
 
 const env: EnvironmentFacts = {
   cwd: "/ws", workspaceRoot: "/ws", gitBranch: "main", gitDirty: "clean",
@@ -46,7 +46,7 @@ const env: EnvironmentFacts = {
   turnMaxConcurrency: 4, ingestParallel: 4, toolRoundsUsed: 0, toolRoundsLimit: 15, remainingContextPct: 0,
   maxReadLines: 2000, cacheDir: ".voidrift/cache/", workers: [],
 };
-const percents: SizingPercents = { activeBudgetPct: 20, compactionPct: 40, safetyNetPct: 80, headBudgetPct: 10, noticePcts: [] };
+const percents: SizingPercents = { activeBudgetPct: 20, compactionPct: 40, safetyNetPct: 80, headWarnPct: 20, noticePcts: [] };
 
 function mkSession(): Session {
   const meta: SessionMetadata = {
@@ -68,14 +68,20 @@ function fullSnapshot(): ContextSnapshot {
   return s;
 }
 
-function mkPipeline(s: Session, bus: EventBus, p: SizingPercents = percents, summarize?: (p: string, m: number) => Promise<string>) {
+function mkPipeline(
+  s: Session,
+  bus: EventBus,
+  p: SizingPercents = percents,
+  summarize?: (p: string, m: number) => Promise<string>,
+  opts: { window?: number; snapshot?: () => ContextSnapshot; toolSchemaText?: string } = {},
+) {
   return new ContextPipeline(s, {
     bus,
     getPercents: () => p,
-    getWindow: () => 16_000,
+    getWindow: () => opts.window ?? 16_000,
     getOutputReservation: () => 2000,
-    buildSnapshot: () => fullSnapshot(),
-    getToolSchemaText: () => "read_file: reads",
+    buildSnapshot: () => (opts.snapshot ? opts.snapshot() : fullSnapshot()),
+    getToolSchemaText: () => opts.toolSchemaText ?? "read_file: reads",
     ...(summarize ? { summarize } : {}),
   });
 }
@@ -103,13 +109,14 @@ describe("§4 context pipeline integration (acceptance gate)", () => {
     await fs.rm(ws, { recursive: true, force: true });
   });
 
-  it("assembles a three-layer head within contextHeadBudgetPct with digest+pointer, manifests, and cache breaks (§4.2, §4.2.1, §4.3)", () => {
+  it("assembles a three-layer head WHOLE (no cap) with digest+pointer, manifests, and cache breaks (§4.2, §4.2.1, §4.3)", () => {
     const s = mkSession();
     const bus = new EventBus();
     const p = mkPipeline(s, bus);
     const { blocks, head } = p.buildSystemMessage(fullSnapshot());
-    // head within the 10%-of-16k = 1600 cap
-    expect(head.headTokens).toBeLessThanOrEqual(1600);
+    // the head is measured whole and reports per-component sizes (§4.2.1)
+    expect(head.headTokens).toBeGreaterThan(0);
+    expect(head.components.length).toBeGreaterThan(0);
     const agent = blocks.find((b) => b.layer === "agent")!;
     const voidB = blocks.find((b) => b.layer === "void")!;
     // digest+pointer in the head, manifest one-liners, no bodies
@@ -120,6 +127,158 @@ describe("§4 context pipeline integration (acceptance gate)", () => {
     // cache breaks fall on the layer boundaries (§4.3)
     expect(agent.cacheBoundary).toBe(true);
     expect(voidB.cacheBoundary).toBe(true);
+  });
+
+  it("a ~60% head loads WHOLE and raises ONE head crossing naming components; nothing truncated (§4.2.1, §4.8, §14.6)", () => {
+    const s = mkSession();
+    const bus = new EventBus();
+    const events: EventEnvelope[] = [];
+    bus.subscribe("*", (e) => events.push(e));
+    // Autonomous-kickoff shape: a big AGENTS.md whose fixed context is ~60% of a
+    // 16k window (> the 20% warn threshold). The exact body must survive whole.
+    const bigAgents = "AGENTS-WHOLE ".repeat(3000); // ~39k chars ≈ ~9.6k tokens ≈ 60% of 16k
+    const snap = (): ContextSnapshot => {
+      const snapshot = fullSnapshot();
+      snapshot.projectInstructions = bigAgents;
+      return snapshot;
+    };
+    const p = mkPipeline(s, bus, percents, undefined, { window: 16_000, snapshot: snap });
+    const { message, head } = p.buildSystemMessage(snap());
+    // The whole AGENTS.md rides the system message verbatim (exact string equality).
+    const sysText = (message.content as { text: string }[]).map((b) => b.text).join("\n");
+    expect(sysText).toContain(bigAgents);
+    p.reportHead(head);
+    const headCrossings = events.filter(
+      (e) => e.type === "CONTEXT_THRESHOLD_CROSSED" && (e.payload as { level: string }).level === "head",
+    );
+    expect(headCrossings).toHaveLength(1);
+    const payload = headCrossings[0]!.payload as { level: string; percentage: number; components: { name: string; tokens: number }[] };
+    expect(payload.percentage).toBeGreaterThanOrEqual(20);
+    expect(payload.components.length).toBeGreaterThan(0);
+    // The largest component is AGENTS.md, named with its token size.
+    expect(payload.components[0]!.name).toBe("AGENTS.md");
+    expect(payload.components[0]!.tokens).toBeGreaterThan(0);
+    // The head is NOT degraded: the whole body is still in the message.
+    expect(head.headTokens).toBeGreaterThan(0);
+  });
+
+  it("a head under contextHeadWarnPct emits NO head crossing (§4.2.1)", () => {
+    const s = mkSession();
+    const bus = new EventBus();
+    const events: EventEnvelope[] = [];
+    bus.subscribe("*", (e) => events.push(e));
+    // The default fullSnapshot head is tiny relative to a 16k window (< 20%).
+    const p = mkPipeline(s, bus);
+    const { head } = p.buildSystemMessage(fullSnapshot());
+    p.reportHead(head);
+    const headCrossings = events.filter(
+      (e) => e.type === "CONTEXT_THRESHOLD_CROSSED" && (e.payload as { level: string }).level === "head",
+    );
+    expect(headCrossings).toHaveLength(0);
+  });
+
+  it("the bound tool schemas count toward the head warning: a 15% head + 10% schemas crosses 20%, tiny schemas do not (§4.2.1, §4.8, §14.6)", () => {
+    const window = 16_000;
+    // A head whose tokens land clearly BELOW the 20% warn threshold on its own
+    // (~15% of the window) so the crossing can only come from adding the schemas.
+    const headAgents = "A".repeat(0.15 * window * CHARS_PER_TOKEN - 400);
+    // Bound tool schemas worth ~10% of the window: 15% + 10% = 25% > 20%.
+    const bigSchemas = "S".repeat(0.1 * window * CHARS_PER_TOKEN);
+    const snap = (): ContextSnapshot => {
+      const snapshot = fullSnapshot();
+      snapshot.projectInstructions = headAgents;
+      return snapshot;
+    };
+
+    // Case 1: large schemas push the fixed context over the threshold.
+    {
+      const s = mkSession();
+      const bus = new EventBus();
+      const events: EventEnvelope[] = [];
+      bus.subscribe("*", (e) => events.push(e));
+      const p = mkPipeline(s, bus, percents, undefined, { window, snapshot: snap, toolSchemaText: bigSchemas });
+      const { head } = p.buildSystemMessage(snap());
+      // The head ALONE is under the 20% warn threshold — only the schemas cross it.
+      expect(Math.round((head.headTokens / window) * 100)).toBeLessThan(20);
+      p.reportHead(head);
+      const crossings = events.filter(
+        (e) => e.type === "CONTEXT_THRESHOLD_CROSSED" && (e.payload as { level: string }).level === "head",
+      );
+      expect(crossings).toHaveLength(1);
+      const payload = crossings[0]!.payload as { percentage: number; components: { name: string; tokens: number }[] };
+      expect(payload.percentage).toBeGreaterThanOrEqual(20);
+      // The fixed context the warning measures includes the bound tool schemas.
+      expect(payload.components.some((c) => c.name === "tool schemas")).toBe(true);
+    }
+
+    // Case 2: the SAME head with tiny schemas stays under the threshold.
+    {
+      const s = mkSession();
+      const bus = new EventBus();
+      const events: EventEnvelope[] = [];
+      bus.subscribe("*", (e) => events.push(e));
+      const p = mkPipeline(s, bus, percents, undefined, { window, snapshot: snap, toolSchemaText: "x" });
+      const { head } = p.buildSystemMessage(snap());
+      p.reportHead(head);
+      const crossings = events.filter(
+        (e) => e.type === "CONTEXT_THRESHOLD_CROSSED" && (e.payload as { level: string }).level === "head",
+      );
+      expect(crossings).toHaveLength(0);
+    }
+  });
+
+  it("the head crossing fires once and RE-ARMS after the head drops below the threshold (§4.8)", () => {
+    const s = mkSession();
+    const bus = new EventBus();
+    const events: EventEnvelope[] = [];
+    bus.subscribe("*", (e) => events.push(e));
+    const big = "AGENTS-WHOLE ".repeat(3000);
+    const small = fullSnapshot();
+    let useBig = true;
+    const snap = (): ContextSnapshot => {
+      if (!useBig) return small;
+      const snapshot = fullSnapshot();
+      snapshot.projectInstructions = big;
+      return snapshot;
+    };
+    const p = mkPipeline(s, bus, percents, undefined, { window: 16_000, snapshot: snap });
+    p.reportHead(p.buildSystemMessage(snap()).head); // over → fires
+    p.reportHead(p.buildSystemMessage(snap()).head); // still over → no refire
+    useBig = false;
+    p.reportHead(p.buildSystemMessage(snap()).head); // drops below → re-arm, no event
+    useBig = true;
+    p.reportHead(p.buildSystemMessage(snap()).head); // over again → fires again
+    const headCrossings = events.filter(
+      (e) => e.type === "CONTEXT_THRESHOLD_CROSSED" && (e.payload as { level: string }).level === "head",
+    );
+    expect(headCrossings).toHaveLength(2);
+  });
+
+  it("the head warning uses the SAME percentage rule on a 16k and a 1M window (§4.2.1)", () => {
+    // A head whose fixed context is ~30% of the window crosses 20% on BOTH
+    // windows; a head at ~10% crosses on NEITHER. The rule is a percentage of the
+    // window, not an absolute token count.
+    for (const window of [16_000, 1_000_000]) {
+      const over = Math.floor(window * 0.3 * 4); // ~30% of window in chars (4 chars/token)
+      const under = Math.floor(window * 0.1 * 4); // ~10%
+      for (const [chars, expected] of [[over, 1], [under, 0]] as const) {
+        const s = mkSession();
+        const bus = new EventBus();
+        const events: EventEnvelope[] = [];
+        bus.subscribe("*", (e) => events.push(e));
+        const snap = (): ContextSnapshot => {
+          const snapshot = emptySnapshot(env);
+          snapshot.projectInstructions = "A".repeat(chars);
+          return snapshot;
+        };
+        const p = mkPipeline(s, bus, percents, undefined, { window, snapshot: snap, toolSchemaText: "" });
+        p.reportHead(p.buildSystemMessage(snap()).head);
+        const headCrossings = events.filter(
+          (e) => e.type === "CONTEXT_THRESHOLD_CROSSED" && (e.payload as { level: string }).level === "head",
+        );
+        expect(headCrossings).toHaveLength(expected);
+      }
+    }
   });
 
   it("a caching and a non-caching provider receive IDENTICAL blocks; nothing provider-specific leaks into the prompt (§4.3)", async () => {
@@ -336,7 +495,14 @@ describe("§4 context pipeline integration (acceptance gate)", () => {
     expect(bus_events.some((e) => e.type === "TURN_COMPLETE")).toBe(false);
     const overflow = bus_events.find((e) => e.type === "CONTEXT_OVERFLOW");
     expect(overflow).toBeDefined();
-    expect((overflow!.payload as { limit: number }).limit).toBe(500);
+    // §4.10 — the refusal names the breakdown: estimated input, output
+    // reservation, and the window limit (so the user sees what did not fit).
+    const op = overflow!.payload as { limit: number; estimatedInput: number; maxOutputTokens: number; message: string };
+    expect(op.limit).toBe(500);
+    expect(op.maxOutputTokens).toBe(400);
+    expect(op.estimatedInput).toBeGreaterThan(0);
+    expect(op.estimatedInput + op.maxOutputTokens).toBeGreaterThan(op.limit);
+    expect(op.message).toBeTruthy();
   });
 
   it("the meter is CLAMPED to 100% with an `over` flag and the hard stop refuses an over-limit turn even when maxOutputTokens is UNSET (§4.8, §4.10, FX-C)", async () => {

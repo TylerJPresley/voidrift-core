@@ -47,7 +47,6 @@ import {
 import type { SuggestionsDirectory } from "../adapters/suggestions-directory.js";
 import {
   assembleProjectHead,
-  tokensToChars,
   type ProjectFile,
   type ProjectContext,
 } from "../entities/memory/project-context.js";
@@ -108,18 +107,12 @@ export interface MemoryDeps {
   sessions: SessionRepository;
   suggestions: SuggestionsDirectory;
   /** Config bounds (§6.3) resolved per call so a config edit takes effect. */
-  getBounds: () => { entryChars: number; projectChars: number; reflectionBatchSize: number };
+  getBounds: () => { entryChars: number; reflectionBatchSize: number };
   /** Discover AGENTS.md files for project context (§6.6). */
   discoverProjectFiles: () => Promise<ProjectFile[]>;
-  /** True when the user explicitly configured `limits.memory.projectChars`
-   * (source is not the registry default). When true `projectContext()` uses that
-   * char budget; when false it uses `ingest.fitFraction` × the window (§6.6/§4.8).
-   * Absent → treated as unconfigured (the fit fraction wins when a window is
-   * available, else the legacy `getBounds().projectChars`). */
-  projectCharsConfigured?: () => boolean;
-  /** The selected endpoint's context window in TOKENS, so the fit-test budget is
-   * `ingest.fitFraction × window` converted to chars by the §4.8 estimator.
-   * Absent → fall back to the explicit/legacy char bound. */
+  /** The selected endpoint's context window in TOKENS, so the window-fit budget
+   * is `ingest.fitFraction × window` converted to chars by the §4.8 estimator.
+   * Absent → the whole merge rides the head (no window to fit against). */
   getContextWindow?: () => number;
   /** Consult/produce the project-instructions ingest DIGEST (§8.7) for the merged
    * content `hash`. Returns the cached digest text on a HIT; on a MISS returns
@@ -128,10 +121,9 @@ export interface MemoryDeps {
    * fan-out. Absent in a headless/no-ingest build (the head carries the marked
    * head only, §8.7). */
   projectDigest?: (merged: string, hash: string) => string | null;
-  /** Optional limits port (§13.11). When present, `memory.projectChars` is read
-   * from the registry and a LIMIT_HIT is emitted when the merge truncates. The
-   * exemplar for the limits foundation; parallel implementers wire the same way
-   * per area. Absent in callers not yet migrated (falls back to `getBounds`). */
+  /** Optional limits port (§13.11). When present, `ingest.fitFraction` is read
+   * from the registry for the window-fit test and a LIMIT_HIT is emitted when the
+   * merge cannot fit the window. Absent in callers not yet migrated. */
   limits?: LimitsPort;
   /** Read the turn records for a session boundary (§6.7); the §10 record is a
    * clean seam — slice 4 reads what session metadata/the event record supplies. */
@@ -459,16 +451,15 @@ export class Memory {
 
   /**
    * The always-present memory index (§4.6, §6.2): one `summary` line per
-   * agent-written entry (`user-model`, `note`), bounded to an internal 5% of
-   * `contextLimit`. When full, the OLDEST entries demote to keyword-only (still
-   * stored, still keyword-discoverable, still loadable by id) and reappear when
-   * room returns. Delegates to the pure `buildMemoryIndex`.
+   * agent-written entry (`user-model`, `note`). The index loads WHOLE — nothing
+   * is demoted or capped; its size is part of the uncapped head (§4.2.1) and the
+   * head warning names it among the largest components when it grows. Delegates
+   * to the pure `buildMemoryIndex`.
    */
   memoryIndex(contextLimit: number): MemoryIndex {
-    const capPct = this.deps.limits ? this.deps.limits.get("memory.indexCapPct") : undefined;
-    const idx = buildMemoryIndex([...this.index.values()], contextLimit, capPct);
-    // §10.10 — strip control/bidi/ANSI at render: the active summaries ride the
-    // head every turn and may come from a hand-edited on-disk entry.
+    const idx = buildMemoryIndex([...this.index.values()], contextLimit);
+    // §10.10 — strip control/bidi/ANSI at render: the summaries ride the head
+    // every turn and may come from a hand-edited on-disk entry.
     return {
       active: idx.active.map((l) => ({
         ...l,
@@ -531,58 +522,45 @@ export class Memory {
 
   /**
    * Load AGENTS.md as project context (§6.6, §4.8, §8.7). Discover, merge
-   * most-specific-last (the WHOLE content, never cut), and size the HEAD against
-   * a budget: the explicit `limits.memory.projectChars` when the user set it,
-   * else the SAME fit test as any content — `limits.ingest.fitFraction` × the
-   * endpoint window converted to chars by the §4.8 estimator. When the merge fits
-   * the head budget it rides the head WHOLE; when it does not, the head carries
-   * the cached ingest DIGEST (or, on the first turn before one is cached, a marked
-   * head) plus the overflow marker naming `limits.ingest.fitFraction`, and the
-   * ingest is kicked in the BACKGROUND (interactive only; never blocks the turn,
-   * never started headless). One LIMIT_HIT names the key on overflow.
+   * most-specific-last (the WHOLE content, never cut), and ride it on the head
+   * WHOLE as a tier-1 inline item (§4.2.1) — project instructions are never
+   * silently truncated and never digested. ONLY when the merged files cannot fit
+   * the window at all — the SAME fit test as any content, `limits.ingest.fitFraction`
+   * × the endpoint window converted to chars by the §4.8 estimator — does the
+   * head carry the cached ingest DIGEST (or, on the first turn before one is
+   * cached, a marked head) plus the overflow marker naming `limits.ingest.fitFraction`,
+   * and the ingest is kicked in the BACKGROUND (interactive only; never blocks
+   * the turn, never started headless). One LIMIT_HIT names the key on overflow.
    */
   async projectContext(): Promise<ProjectContext> {
     const files = await this.deps.discoverProjectFiles();
     const budget = this.projectHeadBudgetChars();
-    // The effective structural head-digest cap: the live `memory.projectDigestMaxChars`
-    // override from the limits port (same pattern as the projectChars budget above),
-    // threaded into the pure entity so a config override changes the head length.
-    const digestMax = this.deps.limits
-      ? this.deps.limits.get("memory.projectDigestMaxChars")
-      : undefined;
-    // Consult the digest cache FIRST so a cached digest rides the head; a miss
-    // kicks the ingest in the background (fire-and-forget) — the turn is never
-    // blocked on a worker fan-out (§8.7).
-    const full = assembleProjectHead(files, budget, null, digestMax).full;
+    // Consult the digest cache FIRST so a cached digest rides the head when the
+    // merge cannot fit the window; a miss kicks the ingest in the background
+    // (fire-and-forget) — the turn is never blocked on a worker fan-out (§8.7).
+    const full = assembleProjectHead(files, budget, null).full;
     const cached = this.deps.projectDigest ? this.deps.projectDigest(full, hashOf(full)) : null;
-    const ctx = assembleProjectHead(files, budget, cached, digestMax);
+    const ctx = assembleProjectHead(files, budget, cached);
     if (ctx.overflow && this.deps.limits) {
-      // Name the explicit char key when the user set it, else the ingest
-      // fit-fraction key that drove the budget — the one the user would raise.
-      const key = this.projectCharsConfigured() ? "memory.projectChars" : "ingest.fitFraction";
-      this.deps.limits.hit(key, ctx.full.length, { what: "project instructions exceed the head budget; a digest rides the head" });
+      this.deps.limits.hit("ingest.fitFraction", ctx.full.length, {
+        what: "project instructions cannot fit the window; an ingest digest rides the head",
+      });
     }
     return ctx;
   }
 
-  /** True when the user explicitly configured `limits.memory.projectChars`. */
-  private projectCharsConfigured(): boolean {
-    return this.deps.projectCharsConfigured ? this.deps.projectCharsConfigured() : false;
-  }
-
-  /** The head char budget for project instructions (§6.6/§4.8/§8.7): the explicit
-   * `memory.projectChars` when configured, else the SAME fit test as any content
-   * — `ingest.fitFraction` × the endpoint window (tokens → chars). Falls back to
-   * the legacy char bound when no window/port is wired. */
+  /** The head char budget for project instructions (§6.6/§4.8/§8.7): the SAME
+   * fit test as any content — `ingest.fitFraction` × the endpoint window
+   * (tokens → chars, the §4.8 4-chars/token estimate). Falls back to a large
+   * sentinel when no window/port is wired (so the whole merge rides the head). */
   private projectHeadBudgetChars(): number {
-    const configured = this.projectCharsConfigured();
-    if (!configured && this.deps.limits && this.deps.getContextWindow) {
+    if (this.deps.limits && this.deps.getContextWindow) {
       const fraction = this.deps.limits.get("ingest.fitFraction");
       const windowTokens = this.deps.getContextWindow();
-      const budget = Math.floor(tokensToChars(Math.floor(fraction * windowTokens)));
+      const budget = Math.floor(fraction * windowTokens) * 4;
       if (budget > 0) return budget;
     }
-    return this.deps.limits ? this.deps.limits.get("memory.projectChars") : this.deps.getBounds().projectChars;
+    return Number.MAX_SAFE_INTEGER;
   }
 
   // ── reflection + suggestions (§6.7) ──────────────────────────────────────────

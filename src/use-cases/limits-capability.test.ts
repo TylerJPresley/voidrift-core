@@ -12,7 +12,7 @@ function setup() {
   const bus = new EventBus();
   const events: { key: string; value: number; area: string }[] = [];
   bus.subscribe("LIMIT_HIT", (e) => events.push(e.payload as { key: string; value: number; area: string }));
-  const resolved = resolveLimits([{ layer: "project", limits: { memory: { projectChars: 4000 } } }]);
+  const resolved = resolveLimits([{ layer: "project", limits: { memory: { entryChars: 4000 } } }]);
   const limits = new LimitsCapability(resolved, bus, { session: "s1" });
   return { bus, events, limits };
 }
@@ -20,7 +20,7 @@ function setup() {
 describe("LimitsCapability", () => {
   it("get returns the resolved effective value", () => {
     const { limits } = setup();
-    expect(limits.get("memory.projectChars")).toBe(4000);
+    expect(limits.get("memory.entryChars")).toBe(4000);
     expect(limits.get("tools.commandOutputMaxBytes")).toBe(100_000);
   });
 
@@ -31,8 +31,8 @@ describe("LimitsCapability", () => {
 
   it("action returns the effective action for a key (§13.11)", () => {
     const { limits } = setup();
-    // memory.projectChars has default action 'warn'
-    expect(limits.action("memory.projectChars")).toBe("warn");
+    // memory.entryChars has default action 'warn'
+    expect(limits.action("memory.entryChars")).toBe("warn");
     // tools.commandOutputMaxBytes also has default action 'warn'
     expect(limits.action("tools.commandOutputMaxBytes")).toBe("warn");
   });
@@ -42,21 +42,21 @@ describe("LimitsCapability", () => {
     const resolved = resolveLimits([
       {
         layer: "project",
-        limits: { memory: { projectChars: { value: 4000, action: "deny" as const } } },
+        limits: { memory: { entryChars: { value: 4000, action: "deny" as const } } },
       },
     ]);
     const limits = new LimitsCapability(resolved, bus);
-    expect(limits.action("memory.projectChars")).toBe("deny");
+    expect(limits.action("memory.entryChars")).toBe("deny");
   });
 
   it("hit emits LIMIT_HIT once per key per turn", () => {
     const { limits, events } = setup();
-    const r1 = limits.hit("memory.projectChars", 9000, { what: "project instructions truncated" });
-    const r2 = limits.hit("memory.projectChars", 9500);
+    const r1 = limits.hit("memory.entryChars", 9000, { what: "project instructions truncated" });
+    const r2 = limits.hit("memory.entryChars", 9500);
     expect(r1.first).toBe(true);
     expect(r2.first).toBe(false);
     expect(events.length).toBe(1);
-    expect(events[0]?.key).toBe("memory.projectChars");
+    expect(events[0]?.key).toBe("memory.entryChars");
     expect(events[0]?.value).toBe(4000);
     expect(events[0]?.area).toBe("memory");
   });
@@ -79,22 +79,22 @@ describe("LimitsCapability", () => {
 
   it("notice uses the blueprint wording", () => {
     const { limits } = setup();
-    const r = limits.hit("memory.projectChars", 9000, { what: "project instructions truncated" });
-    expect(r.notice).toBe("project instructions truncated (limits.memory.projectChars = 4000). Raise it in config: limits.memory.projectChars");
+    const r = limits.hit("memory.entryChars", 9000, { what: "project instructions truncated" });
+    expect(r.notice).toBe("project instructions truncated (limits.memory.entryChars = 4000). Raise it in config: limits.memory.entryChars");
   });
 
   it("resetTurn re-arms the per-key emission", () => {
     const { limits, events } = setup();
-    limits.hit("memory.projectChars");
+    limits.hit("memory.entryChars");
     limits.resetTurn();
-    const again = limits.hit("memory.projectChars");
+    const again = limits.hit("memory.entryChars");
     expect(again.first).toBe(true);
     expect(events.length).toBe(2);
   });
 
   it("a different key emits its own event in the same turn", () => {
     const { limits, events } = setup();
-    limits.hit("memory.projectChars");
+    limits.hit("memory.entryChars");
     limits.hit("tools.commandOutputMaxBytes");
     expect(events.length).toBe(2);
   });

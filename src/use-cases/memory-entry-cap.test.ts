@@ -27,7 +27,7 @@ function makeMemory(entryChars: number, action?: "deny") {
     bus,
     sessions: new InMemorySessionRepository(),
     suggestions: new SuggestionsDirectory(new InMemoryFileSystem(), ".voidrift/suggestions"),
-    getBounds: () => ({ entryChars, projectChars: 8000, reflectionBatchSize: 3 }),
+    getBounds: () => ({ entryChars, reflectionBatchSize: 3 }),
     discoverProjectFiles: async () => [],
     limits,
   };

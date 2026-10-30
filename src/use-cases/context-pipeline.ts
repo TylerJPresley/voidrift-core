@@ -17,11 +17,10 @@ import { SystemMessage, HumanMessage, AIMessage, type BaseMessage } from "@langc
 import type { EventBus } from "../entities/event-bus.js";
 import type { Session } from "../entities/session.js";
 import { DocumentRegistry } from "../entities/document-registry.js";
-import { assembleHead, appendTurnMetadata, type ContentBlock } from "../entities/context/head.js";
+import { assembleHead, appendTurnMetadata, type ContentBlock, type HeadComponent } from "../entities/context/head.js";
 import type { ContextSnapshot } from "../entities/context/snapshot.js";
 import {
   computeBudget,
-  headCapTokens,
   occupancyPct,
   estimateTokens,
   resolveUsedTokens,
@@ -140,13 +139,38 @@ export class ContextPipeline {
 
   /** Assemble the single leading SystemMessage from the snapshot (§4.2, §4.3). */
   buildSystemMessage(snapshot: ContextSnapshot): { message: SystemMessage; blocks: ContentBlock[]; head: ReturnType<typeof assembleHead> } {
-    const window = this.deps.getWindow();
-    const cap = headCapTokens(window, this.percents().headBudgetPct);
-    const head = assembleHead(snapshot, cap);
+    const head = assembleHead(snapshot);
     const blocks = appendTurnMetadata(head, snapshot);
     const content = blocks.map((b) => ({ type: "text" as const, text: b.text }));
     const message = new SystemMessage({ content });
     return { message, blocks, head };
+  }
+
+  /**
+   * The head-size warning (§4.2.1, §4.8, §14.6): when the FIXED context — the
+   * head tokens plus the bound tool-schema tokens — passes `contextHeadWarnPct`
+   * of the WINDOW, fire ONE `CONTEXT_THRESHOLD_CROSSED` `head` crossing carrying
+   * the largest head components with their sizes, so the user prunes plans,
+   * memories, prompts, or AGENTS.md. It cuts nothing (the head renders whole);
+   * the §4.10 hard stop is the only refusal. Re-arms like the other levels — it
+   * fires once on the way up and clears on the way down (§4.8). Called from the
+   * context middleware per turn with the assembled head and the tool-schema text.
+   */
+  reportHead(head: ReturnType<typeof assembleHead>): void {
+    const window = this.deps.getWindow();
+    if (window <= 0) return;
+    const toolSchemaTokens = estimateTokens(this.deps.getToolSchemaText());
+    const fixedTokens = head.headTokens + toolSchemaTokens;
+    const headPct = Math.round((fixedTokens / window) * 100);
+    const warnPct = this.percents().headWarnPct;
+    const components: HeadComponent[] = [
+      ...head.components,
+      { name: "tool schemas", tokens: toolSchemaTokens },
+    ].sort((a, b) => b.tokens - a.tokens);
+    const crossing = this.tracker.updateHead(headPct, warnPct, components);
+    if (crossing) {
+      this.deps.bus.emit("CONTEXT_THRESHOLD_CROSSED", crossing, { session: this.session.id });
+    }
   }
 
   /**

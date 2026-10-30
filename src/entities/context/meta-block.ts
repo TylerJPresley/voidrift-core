@@ -5,7 +5,8 @@
  * EVERY turn from live values, so it never drifts from the real session state.
  * It is DATA, never authority (§1 rule 15): it tells the model where it is and
  * what it is working with, and grants, widens or relaxes nothing. One field per
- * line, all fields always rendered (bounded by contextHeadBudgetPct, not a separate cap).
+ * line, all fields always rendered (the head has no cap; the head WARNING guards
+ * size instead, §4.2.1).
  * It carries NO secret and NO file content; every rendered value is passed through the
  * shared secret masker and the shared unsafe-char stripper (control/ANSI/bidi/zero-width
  * removed, newlines collapsed to one space) before it leaves the process, so no field
@@ -143,8 +144,8 @@ function lines(env: EnvironmentFacts): string[] {
 
 /**
  * Render the session meta block (§4.4). Builds every field without dropping any.
- * All fields are always rendered since the meta block is bounded by
- * contextHeadBudgetPct rather than a separate cap.
+ * All fields are always rendered: the head has no cap (§4.2.1), so nothing in
+ * the meta block is ever shortened or dropped.
  */
 export function renderMetaBlock(env: EnvironmentFacts): MetaBlockRender {
   const text = lines(env).join("\n");

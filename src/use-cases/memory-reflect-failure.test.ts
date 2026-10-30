@@ -23,7 +23,7 @@ function harness(draft: MemoryDeps["draftMemoryNoteFromFailure"]) {
     bus,
     sessions: new InMemorySessionRepository(),
     suggestions,
-    getBounds: () => ({ entryChars: 2200, projectChars: 8000, reflectionBatchSize: 3 }),
+    getBounds: () => ({ entryChars: 2200, reflectionBatchSize: 3 }),
     discoverProjectFiles: async () => [],
     readSessionTurns: async () => [],
     ...(draft ? { draftMemoryNoteFromFailure: draft } : {}),

@@ -107,7 +107,10 @@ export interface SizingPercents {
   activeBudgetPct: number;
   compactionPct: number;
   safetyNetPct: number;
-  headBudgetPct: number;
+  /** The head-size WARNING threshold (§4.2.1): when the fixed context (head +
+   * bound tool schemas) passes this share of the WINDOW, one head crossing fires.
+   * Not a cap — the head is never shortened or truncated (§4.2.1). */
+  headWarnPct: number;
   noticePcts: number[];
 }
 
@@ -147,9 +150,15 @@ export function computeBudget(args: {
   };
 }
 
-/** The head cap in tokens — a share of the window (§4.2.1, §4.8). */
-export function headCapTokens(window: number, headBudgetPct: number): number {
-  return Math.floor((window * headBudgetPct) / 100);
+/**
+ * The head WARNING threshold in tokens — a share of the window (§4.2.1, §4.8).
+ * The fixed context (head tokens + bound tool-schema tokens) crossing this value
+ * fires one `CONTEXT_THRESHOLD_CROSSED` `head` crossing. It is NOT a cap: the
+ * head is never shortened or truncated (§4.2.1); the §4.10 hard stop is the only
+ * refusal.
+ */
+export function headWarnTokens(window: number, headWarnPct: number): number {
+  return Math.floor((window * headWarnPct) / 100);
 }
 
 /**

@@ -169,14 +169,14 @@ describe("engine — active top-level agent drives prompt, tool set, workers (§
     const cid = chatCreated.ok ? chatCreated.value.id : "";
     await chatReady.api.session.send(cid, { input: "hi" });
     expect(chatModel.systemText).toContain("data, never authority");
-    // The head still fits its budget: the rendered head token count stays within
-    // contextHeadBudgetPct of the window (§4.2.1 — hard rules are never dropped).
+    // The head renders whole (no cap, §4.2.1) and is reported; a small head on a
+    // large window stays well under the window.
     const ctx = await chatReady.api.models.context(cid);
     expect(ctx.ok).toBe(true);
     if (ctx.ok) {
       const bd = ctx.value as { window: number; headTokens: number };
-      // Default contextHeadBudgetPct is 10% of the window.
-      expect(bd.headTokens).toBeLessThanOrEqual(Math.floor(bd.window * 0.1));
+      expect(bd.headTokens).toBeGreaterThan(0);
+      expect(bd.headTokens).toBeLessThan(bd.window);
     }
 
     // A second top-level agent (research) renders the same hard rules.

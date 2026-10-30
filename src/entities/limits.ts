@@ -171,10 +171,7 @@ export const LIMITS: readonly LimitSpec[] = [
 
   // --- memory (E) ---
   { key: "memory.entryChars", area: "memory", default: 2200, unit: "chars", class: "tunable", action: "warn", min: 1, max: 1_000_000, doc: "Max chars of a single memory entry.", inv: "M1", alias: "memoryMaxEntryChars" },
-  { key: "memory.projectChars", area: "memory", default: 8000, unit: "chars", class: "tunable", action: "warn", min: 1, max: 10_000_000, doc: "Project-instructions head bound (AGENTS.md etc.); explicit override of the ingest.fitFraction fit test.", inv: "M3", alias: "memoryMaxProjectChars" },
   { key: "memory.reflectionBatchSize", area: "memory", default: 3, unit: "count", class: "tunable", action: "warn", min: 1, max: 1000, doc: "Reflection batch size.", inv: "M6", alias: "memoryReflectionBatchSize" },
-  { key: "memory.indexCapPct", area: "memory", default: 0.05, unit: "ratio", class: "tunable", action: "warn", min: 0, max: 1, doc: "Memory index cap as a share of the context window.", inv: "M2" },
-  { key: "memory.projectDigestMaxChars", area: "memory", default: 2000, unit: "chars", class: "tunable", action: "warn", min: 1, max: 1_000_000, doc: "Project-context structural head digest length (owner-set 2000; 14/16 real AGENTS.md fit fully); the per-section sentence allowance is derived from this (floor(maxChars / sectionCount)), not a separate key; the full body rides the session-cache pointer.", inv: "M4" },
   { key: "memory.sequenceMaxLen", area: "memory", default: 6, unit: "count", class: "tunable", action: "warn", min: 1, max: 1000, doc: "Longest repeated tool sequence the detector matches.", inv: "M7", alias: "sequenceMaxLen" },
   { key: "memory.evidencePacketMaxChars", area: "memory", default: 8000, unit: "chars", class: "tunable", action: "warn", min: 1, max: 10_000_000, doc: "Skill-draft evidence-packet cap.", inv: "M10" },
   { key: "memory.sequenceEvidenceFraction", area: "memory", default: 0.1, unit: "ratio", class: "tunable", action: "warn", min: 0, max: 1, doc: "Sequence evidence-packet cap as a fraction of the context window.", inv: "M8" },

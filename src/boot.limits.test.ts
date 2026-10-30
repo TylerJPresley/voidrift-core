@@ -1,10 +1,10 @@
-/**
+/*
  * Boot limits wiring (core-blueprint.md §13.11): createCore builds ONE
  * LimitsCapability from the layered config and injects it as the LimitsPort into
- * the use-cases. Proven through the exemplar: a project `limits.memory.
- * projectChars` override changes a real project-context load (the boot-wired
- * Memory reads AGENTS.md through the injected port) and emits one LIMIT_HIT with
- * the RESOLVED value — i.e. the same port boot wired is the one in effect.
+ * the use-cases. Proven through project context: AGENTS.md rides the head WHOLE
+ * (tier 1, §6.6), and only when the merge cannot fit the window — the window-fit
+ * test `ingest.fitFraction` × the endpoint window — does it overflow and emit a
+ * LIMIT_HIT naming `ingest.fitFraction`, through the SAME port boot wired.
  */
 import { describe, it, expect } from "vitest";
 import { fakeModel } from "@langchain/core/testing";
@@ -33,25 +33,7 @@ async function boot(fs: InMemoryFileSystem, limits?: Record<string, unknown>) {
 }
 
 describe("createCore limits wiring (§13.11)", () => {
-  it("a project limits.memory.projectChars override changes a real project-context load through createCore", async () => {
-    const fs = new InMemoryFileSystem();
-    await fs.writeFile("AGENTS.md", "x".repeat(400));
-    const { api } = await boot(fs, { memory: { projectChars: 50 } });
-    const hits: { key: string; value: number }[] = [];
-    api.events.subscribe("LIMIT_HIT", (e) => hits.push(e.payload as { key: string; value: number }));
-    const mem = (api as unknown as { deps: { memory: Memory } }).deps.memory;
-    const ctx = await mem.projectContext();
-    // The injected port's resolved value (50) — NOT the registry default (8000) —
-    // bounds the load, so the 400-char AGENTS.md is truncated.
-    expect(ctx.truncated).toBe(true);
-    expect(ctx.limit).toBe(50);
-    const hit = hits.find((h) => h.key === "memory.projectChars");
-    expect(hit, "a LIMIT_HIT for memory.projectChars should fire").toBeDefined();
-    expect(hit?.value).toBe(50);
-    await api.session.shutdown();
-  });
-
-  it("the fit-test default (ingest.fitFraction × window) applies when projectChars is unset: no truncation, no LIMIT_HIT", async () => {
+  it("AGENTS.md rides the head WHOLE when it fits the window: no overflow, no LIMIT_HIT", async () => {
     const fs = new InMemoryFileSystem();
     await fs.writeFile("AGENTS.md", "x".repeat(400));
     const { api } = await boot(fs);
@@ -60,24 +42,42 @@ describe("createCore limits wiring (§13.11)", () => {
     const mem = (api as unknown as { deps: { memory: Memory } }).deps.memory;
     const ctx = await mem.projectContext();
     expect(ctx.overflow).toBe(false);
-    // budget = ingest.fitFraction (0.4) × window (32000 tokens) × 4 chars.
-    expect(ctx.limit).toBe(Math.floor(0.4 * 32000) * 4);
+    expect(ctx.head).toContain("x".repeat(400));
     expect(hits.length).toBe(0);
     await api.session.shutdown();
   });
 
-  it("a config edit re-resolves the one port (CONFIG_RESOLVED): the new bound takes effect", async () => {
+  it("an AGENTS.md too large for the window overflows and names ingest.fitFraction", async () => {
     const fs = new InMemoryFileSystem();
-    await fs.writeFile("AGENTS.md", "x".repeat(400));
-    const { api } = await boot(fs, { memory: { projectChars: 8000 } });
+    // window 32000 tokens → budget = 0.4 × 32000 × 4 = 51200 chars. A larger
+    // file cannot fit the window.
+    await fs.writeFile("AGENTS.md", "x".repeat(60_000));
+    const { api } = await boot(fs);
+    const hits: { key: string }[] = [];
+    api.events.subscribe("LIMIT_HIT", (e) => hits.push(e.payload as { key: string }));
     const mem = (api as unknown as { deps: { memory: Memory } }).deps.memory;
-    expect((await mem.projectContext()).overflow).toBe(false);
-    // Lower the bound via the config capability (session overlay) and re-resolve.
-    const cfg = (api as unknown as { deps: { config: { setProcessOverlay: (o: Record<string, unknown>) => void } } }).deps.config;
-    cfg.setProcessOverlay({ limits: { memory: { projectChars: 50 } } });
     const ctx = await mem.projectContext();
-    expect(ctx.truncated).toBe(true);
-    expect(ctx.limit).toBe(50);
+    expect(ctx.overflow).toBe(true);
+    // The full content is still kept whole.
+    expect(ctx.full).toContain("x".repeat(60_000));
+    const hit = hits.find((h) => h.key === "ingest.fitFraction");
+    expect(hit, "a LIMIT_HIT for ingest.fitFraction should fire").toBeDefined();
+    await api.session.shutdown();
+  });
+
+  it("a lower ingest.fitFraction override re-resolves the one port and forces overflow", async () => {
+    const fs = new InMemoryFileSystem();
+    await fs.writeFile("AGENTS.md", "x".repeat(40_000));
+    const { api } = await boot(fs);
+    const mem = (api as unknown as { deps: { memory: Memory } }).deps.memory;
+    // At default fitFraction 0.4 (budget 51200) the 40k file fits.
+    expect((await mem.projectContext()).overflow).toBe(false);
+    // Lower the fraction via the config capability (session overlay): budget =
+    // 0.01 × 32000 × 4 = 1280 chars → the 40k file cannot fit.
+    const cfg = (api as unknown as { deps: { config: { setProcessOverlay: (o: Record<string, unknown>) => void } } }).deps.config;
+    cfg.setProcessOverlay({ limits: { ingest: { fitFraction: 0.01 } } });
+    const ctx = await mem.projectContext();
+    expect(ctx.overflow).toBe(true);
     await api.session.shutdown();
   });
 });

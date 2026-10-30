@@ -165,7 +165,7 @@ describe("session meta block — real path through createCore (§4.4)", () => {
 
 
 
-  it("the head stays within contextHeadBudgetPct on a 32k window", async () => {
+  it("the head renders whole and is reported on a 32k window (no cap, §4.2.1)", async () => {
     const model = new CaptureModel();
     const ready = await makeCore(model, ws);
     cores.push(ready.api);
@@ -176,7 +176,8 @@ describe("session meta block — real path through createCore (§4.4)", () => {
     expect(ctx.ok).toBe(true);
     if (ctx.ok) {
       const bd = ctx.value as { window: number; headTokens: number };
-      expect(bd.headTokens).toBeLessThanOrEqual(Math.floor(bd.window * 0.1));
+      expect(bd.headTokens).toBeGreaterThan(0);
+      expect(bd.headTokens).toBeLessThan(bd.window);
     }
   });
 });

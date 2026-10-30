@@ -1,6 +1,7 @@
 /**
  * Head assembly (core-blueprint.md §4.2, §4.2.1, §4.3) — three layers, four
- * tiers, the cap, degradation, cache-break blocks, and the turn-metadata tail.
+ * tiers, NO cap (every item whole), component sizes, cache-break blocks, and the
+ * turn-metadata tail.
  */
 import { describe, it, expect } from "vitest";
 import { assembleHead, appendTurnMetadata } from "./head.js";
@@ -38,6 +39,7 @@ function full(): ContextSnapshot {
   s.systemPrompt = "You are VoidRift.";
   s.hardRules = "HARD RULES: never leak secrets.";
   s.identityMemory = "The user is Alex.";
+  s.projectInstructions = "AGENTS WHOLE: run the gate before committing.";
   s.planStatus = "building slice 2";
   s.digests = [
     { label: "AGENTS.md", digest: "D".repeat(400), pointer: ".voidrift/cache/session/s1/agents.md" },
@@ -56,7 +58,7 @@ function full(): ContextSnapshot {
 
 describe("session meta block in the head (§4.4)", () => {
   it("rides the Agent layer with the data-not-authority header and location/concurrency", () => {
-    const head = assembleHead(full(), 1600);
+    const head = assembleHead(full());
     const agent = head.blocks.find((b) => b.layer === "agent")!;
     expect(agent.text.toLowerCase()).toContain("session data");
     expect(agent.text).toContain("PWD / workspace root: /ws");
@@ -68,12 +70,14 @@ describe("session meta block in the head (§4.4)", () => {
 
 describe("head assembly (§4.2.1, §4.3)", () => {
   it("builds Agent and Void cache-break blocks within a generous cap", () => {
-    const head = assembleHead(full(), 1600);
+    const head = assembleHead(full());
     const agent = head.blocks.find((b) => b.layer === "agent")!;
     const voidB = head.blocks.find((b) => b.layer === "void")!;
     // Agent carries inline-always + digests; Void carries manifests
     expect(agent.text).toContain("You are VoidRift.");
     expect(agent.text).toContain("HARD RULES");
+    // AGENTS.md project instructions ride the inline-always tier (§4.2.1, §6.6).
+    expect(agent.text).toContain("AGENTS WHOLE: run the gate before committing.");
     expect(agent.text).toContain("AGENTS.md");
     expect(agent.text).toContain(".voidrift/cache/session/s1/agents.md");
     expect(voidB.text).toContain("src/a.ts");
@@ -85,18 +89,8 @@ describe("head assembly (§4.2.1, §4.3)", () => {
     expect(voidB.text).not.toContain("DDDD");
   });
 
-  it("degrades lower tiers first when over the cap; never drops inline/hard rules", () => {
-    // Given a tiny cap
-    const head = assembleHead(full(), 60);
-    expect(head.degraded).toBe(true);
-    const agent = head.blocks.find((b) => b.layer === "agent")!;
-    // inline-always and hard rules survive
-    expect(agent.text).toContain("You are VoidRift.");
-    expect(agent.text).toContain("HARD RULES");
-  });
-
   it("places turn metadata after the layers, not cached (§4.2)", () => {
-    const head = assembleHead(full(), 1600);
+    const head = assembleHead(full());
     const blocks = appendTurnMetadata(head, full());
     const turn = blocks[blocks.length - 1]!;
     expect(turn.layer).toBe("turn");
@@ -105,7 +99,7 @@ describe("head assembly (§4.2.1, §4.3)", () => {
   });
 
   it("reports a per-tier head split (inline/digest/manifest)", () => {
-    const head = assembleHead(full(), 1600);
+    const head = assembleHead(full());
     expect(head.tierSplit.inline).toBeGreaterThan(0);
     expect(head.tierSplit.digest).toBeGreaterThan(0);
     expect(head.tierSplit.manifest).toBeGreaterThan(0);
@@ -120,7 +114,7 @@ describe("Manual section in the head (§12.8, §4.6)", () => {
       { id: "cli/commands", summary: "CLI commands", readWhen: "before using the CLI", contributed: false },
       { id: "plugin-foo/guide", summary: "Foo guide", readWhen: "when using plugin-foo", contributed: true },
     ];
-    const head = assembleHead(s, 1600);
+    const head = assembleHead(s);
     const voidB = head.blocks.find((b) => b.layer === "void")!;
     expect(voidB.text).toContain("Manual:");
     expect(voidB.text).toContain("- core/orchestrating-work: Orchestrating work Read when: when planning");
@@ -133,24 +127,26 @@ describe("Manual section in the head (§12.8, §4.6)", () => {
     s.manuals = [];
     s.skills = []; // Also empty skills so there's a void block but no Manual section
     s.documents = [{ name: "a.ts", path: "src/a.ts", size: 10, trust: "live", stale: false }]; // Keep docs so void block exists
-    const head = assembleHead(s, 1600);
+    const head = assembleHead(s);
     const voidB = head.blocks.find((b) => b.layer === "void")!;
     expect(voidB.text).not.toContain("Manual:");
   });
 
-  it("truncates the Manual manifest with a note under the manifest cap", () => {
+  it("renders the whole Manual manifest — no truncation, exact strings (§4.2.1, no cap)", () => {
     const s = emptySnapshot(env);
-    s.manuals = Array.from({ length: 20 }, (_, i) => ({
+    s.manuals = Array.from({ length: 200 }, (_, i) => ({
       id: `core/doc-${i}`,
       summary: `Doc ${i}`,
       readWhen: `when doing ${i}`,
       contributed: false,
     }));
-    const head = assembleHead(s, 60);
-    expect(head.degraded).toBe(true);
+    const head = assembleHead(s);
     const voidB = head.blocks.find((b) => b.layer === "void")!;
-    expect(voidB.text).toContain("… (");
-    expect(voidB.text).toContain("more truncated to fit the head budget)");
+    // Every entry rides whole; nothing is truncated and no "more truncated" note.
+    expect(voidB.text).not.toContain("more truncated");
+    for (let i = 0; i < 200; i++) {
+      expect(voidB.text).toContain(`- core/doc-${i}: Doc ${i} Read when: when doing ${i}`);
+    }
   });
 
   it("collapses newlines in summary and readWhen to prevent header injection", () => {
@@ -163,7 +159,7 @@ describe("Manual section in the head (§12.8, §4.6)", () => {
         contributed: false,
       },
     ];
-    const head = assembleHead(s, 1600);
+    const head = assembleHead(s);
     const voidB = head.blocks.find((b) => b.layer === "void")!;
     // Newlines should be collapsed to single spaces
     expect(voidB.text).toContain("- core/test: Test doc with newlines Read when: when needed");
@@ -180,7 +176,7 @@ describe("Manual section in the head (§12.8, §4.6)", () => {
         contributed: false,
       },
     ];
-    const head = assembleHead(s, 1600);
+    const head = assembleHead(s);
     const voidB = head.blocks.find((b) => b.layer === "void")!;
     // All line breaks should be collapsed to single spaces
     expect(voidB.text).toContain("- core/test: Test doc with breaks here Read when: when needed");

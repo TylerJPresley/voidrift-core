@@ -16,7 +16,6 @@ import {
   ESTIMATE_MARGIN_TOKENS,
 } from "./entities/context/budget.js";
 import { estimateRequestTokens } from "./entities/context/model-guard.js";
-import { assembleProjectHead } from "./entities/memory/project-context.js";
 import { buildSequenceEvidence, SEQUENCE_EVIDENCE_MAX_ARGS_PER_STEP, type SequenceSignal, type SequenceExampleSpan } from "./entities/memory/suggestion.js";
 import { extractReadable, runWebFetch, WEB_FETCH_MIN_EXTRACT, WEB_FETCH_MAX_HOPS, type WebFetchDeps } from "./use-cases/web-fetch.js";
 import { LimitsCapability } from "./use-cases/limits-capability.js";
@@ -76,37 +75,6 @@ describe("sequence.evidenceExamplesPerStep is live (§10.6, §13.11)", () => {
     expect(ev.stepArgExamples[0]!.length).toBe(1);
     const ev5 = buildSequenceEvidence(signal(), spans(6), 100_000, 5);
     expect(ev5.stepArgExamples[0]!.length).toBe(5);
-  });
-});
-
-describe("memory.projectDigestMaxChars is live (§4.2.1/§6.6, §13.11)", () => {
-  // A multi-section AGENTS.md that FITS the budget, so the head rides the
-  // structural digest (projectDigest) whose length the cap bounds.
-  const content = [
-    "# AGENTS.md",
-    "Lead paragraph describing the project in one sentence. More detail here.",
-    "## Build",
-    "Run the gate before committing. It builds, tests and lints every package.",
-    "## Testing",
-    "Everything is tested. A bug fix carries a regression test written first.",
-    "## Conventions",
-    "All configuration files are JSON and prose is Markdown throughout the repo.",
-  ].join("\n");
-  const files = [{ path: "AGENTS.md", content, depth: 0, scope: "workspace" as const }];
-
-  it("the default (no live value) is byte-identical to the former registry-default behaviour", () => {
-    const ctx = assembleProjectHead(files, 100_000);
-    const ctxDefault = assembleProjectHead(files, 100_000, null, limitDefault("memory.projectDigestMaxChars"));
-    expect(ctx.overflow).toBe(false);
-    expect(ctx.digest).toBe(ctxDefault.digest);
-  });
-
-  it("a smaller override shortens the fit-path head digest", () => {
-    const wide = assembleProjectHead(files, 100_000, null, 2000);
-    const tight = assembleProjectHead(files, 100_000, null, 40);
-    expect(wide.overflow).toBe(false);
-    expect(tight.overflow).toBe(false);
-    expect(tight.digest.length).toBeLessThan(wide.digest.length);
   });
 });
 

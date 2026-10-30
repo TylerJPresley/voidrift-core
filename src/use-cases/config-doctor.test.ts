@@ -993,7 +993,7 @@ describe("doctor: limits group (§13.11)", () => {
   });
 
   it("marks an area customized when a layer sets a tunable limit", async () => {
-    const c = await cap({ global: seedConfigDocument(), project: { limits: { memory: { projectChars: 4000 } } } });
+    const c = await cap({ global: seedConfigDocument(), project: { limits: { memory: { entryChars: 4000 } } } });
     const report = await runDoctor(baseDeps({ config: c }), { offline: true });
     const mem = limitsGroup(report).findings.find((f) => f.id === "limits.memory");
     expect(mem?.message).toContain("customized");

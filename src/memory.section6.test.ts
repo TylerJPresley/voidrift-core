@@ -81,7 +81,7 @@ describe("§6 integration — memory, bounds, verified writes, typed loading", (
       bus,
       sessions: new InMemorySessionRepository(),
       suggestions: new SuggestionsDirectory(fs, ".voidrift/suggestions"),
-      getBounds: () => ({ entryChars: 2200, projectChars: 8000, reflectionBatchSize: 3 }),
+      getBounds: () => ({ entryChars: 2200, reflectionBatchSize: 3 }),
       discoverProjectFiles: async () => [],
     });
     const res = await memory.write({ title: "Ghost", type: "note", scope: "workspace", body: "did not persist" });
@@ -107,7 +107,7 @@ describe("§6 integration — memory, bounds, verified writes, typed loading", (
     expect(ranked.map((e) => e.id)).toEqual(["file-lesson", "ext-lesson", "plain-lesson"]);
   });
 
-  it("4 — AGENTS.md loads as project context; a nested file overrides a root one; reading stops at the project bound (§6.6)", async () => {
+  it("4 — AGENTS.md loads as project context whole; a nested file overrides a root one; a file too large for the window overflows (§6.6)", async () => {
     await fs.writeFile("AGENTS.md", "ROOT: use spaces");
     await fs.writeFile("pkg/AGENTS.md", "NESTED: use tabs");
     const { api } = await createCore({
@@ -119,17 +119,18 @@ describe("§6 integration — memory, bounds, verified writes, typed loading", (
         modelSelected: "local",
       }),
       checkpointer: createMemoryCheckpointer(),
-      configOverrides: { memoryMaxProjectChars: 10_000 },
       chatModelFactory: () => fakeModel().respond(new AIMessage("ok")),
     });
     const mem = (api as unknown as { deps: { memory: Memory } }).deps.memory;
     const ctx = await mem.projectContext();
-    expect(ctx.full).toContain("ROOT: use spaces");
-    expect(ctx.full).toContain("NESTED: use tabs");
+    expect(ctx.overflow).toBe(false);
+    // Rides the head WHOLE (tier 1): both files appear verbatim.
+    expect(ctx.head).toContain("ROOT: use spaces");
+    expect(ctx.head).toContain("NESTED: use tabs");
     // Most-specific-last: the nested rule wins by appearing after the root one.
     expect(ctx.full.indexOf("NESTED")).toBeGreaterThan(ctx.full.indexOf("ROOT"));
 
-    // Reading stops at the project bound.
+    // A file too large for the window overflows to the window-fit fan-out path.
     const fs2 = new InMemoryFileSystem();
     await fs2.writeFile("AGENTS.md", "y".repeat(400));
     const { api: api2 } = await createCore({
@@ -141,16 +142,16 @@ describe("§6 integration — memory, bounds, verified writes, typed loading", (
         modelSelected: "local",
       }),
       checkpointer: createMemoryCheckpointer(),
-      // §13.11 — the project bound now comes from the limits registry via the
-      // injected port (the exemplar); the legacy `memoryMaxProjectChars` is
-      // superseded for this bound.
-      configOverrides: { limits: { memory: { projectChars: 100 } } },
+      // §13.11 — the window-fit test is `ingest.fitFraction` × the window; a tiny
+      // fraction makes even a 400-char AGENTS.md exceed the window budget.
+      configOverrides: { limits: { ingest: { fitFraction: 0.001 } } },
       chatModelFactory: () => fakeModel().respond(new AIMessage("ok")),
     });
     const mem2 = (api2 as unknown as { deps: { memory: Memory } }).deps.memory;
     const bounded = await mem2.projectContext();
-    expect(bounded.truncated).toBe(true);
-    expect(bounded.limit).toBe(100);
+    expect(bounded.overflow).toBe(true);
+    // The full content is still kept whole — never cut.
+    expect(bounded.full).toContain("y".repeat(400));
   });
 
   it("5 — reflection writes a suggestion applied to the store ONLY after approve, never autonomously (§6.7)", async () => {

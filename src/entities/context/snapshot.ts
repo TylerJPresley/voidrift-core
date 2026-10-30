@@ -70,7 +70,12 @@ export interface ContextSnapshot {
   planStatus: string;
   /** Identity memory, inline every turn (§6.2, §4.6). */
   identityMemory: string;
-  /** AGENTS.md and directive-beyond-identity memory as digest+pointer (§4.2.1 tier 2). */
+  /** AGENTS.md project instructions, inline every turn as a tier-1 item (§6.6,
+   * §4.2.1). The whole merged content when it fits the window; an ingest digest
+   * plus a notice (naming the full-copy pointer) only when the merge cannot fit
+   * the window at all (§8.7). */
+  projectInstructions: string;
+  /** Directive-beyond-identity memory as digest+pointer (§4.2.1 tier 2). */
   digests: DigestPointer[];
   /** The document-registry manifest (§4.5, tier 3). */
   documents: DocumentManifestLine[];
@@ -97,6 +102,7 @@ export function emptySnapshot(environment: EnvironmentFacts): ContextSnapshot {
     environment,
     planStatus: "",
     identityMemory: "",
+    projectInstructions: "",
     digests: [],
     documents: [],
     skills: [],

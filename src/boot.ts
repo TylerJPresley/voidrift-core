@@ -1209,7 +1209,7 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
       ...(entry?.contextActiveBudgetPct !== undefined ? { activeBudgetPct: entry.contextActiveBudgetPct } : {}),
       ...(entry?.contextCompactionPct !== undefined ? { compactionPct: entry.contextCompactionPct } : {}),
       ...(entry?.contextSafetyNetPct !== undefined ? { safetyNetPct: entry.contextSafetyNetPct } : {}),
-      ...(entry?.contextHeadBudgetPct !== undefined ? { headBudgetPct: entry.contextHeadBudgetPct } : {}),
+      ...(entry?.contextHeadWarnPct !== undefined ? { headWarnPct: entry.contextHeadWarnPct } : {}),
       ...(entry?.contextNoticePcts !== undefined ? { noticePcts: entry.contextNoticePcts } : {}),
     };
     return new Engine({
@@ -1513,7 +1513,6 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
       // else the legacy top-level key, else the registry default (§13.11).
       return {
         entryChars: limits.get("memory.entryChars"),
-        projectChars: limits.get("memory.projectChars"),
         reflectionBatchSize: limits.get("memory.reflectionBatchSize"),
       };
     },
@@ -1522,12 +1521,11 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
         workspace: workspaceRoot,
         global: path.join(voidriftConfigDir(), "AGENTS.md"),
       }),
-    // §4.8/§8.7 — the project-instructions head budget. When the user explicitly
-    // set `limits.memory.projectChars` that char bound drives the head; otherwise
-    // `ingest.fitFraction` × the endpoint window (tokens) does — the same fit test
-    // as any content. The WHOLE merge is always kept; only the HEAD is reduced to
-    // a digest on overflow.
-    projectCharsConfigured: () => config.limitSource("memory.projectChars") !== "default",
+    // §6.6/§4.8/§8.7 — project instructions ride the head WHOLE as a tier-1 inline
+    // item. ONLY when the merged files cannot fit the window at all does the
+    // window-fit fan-out engage: the same fit test as any content,
+    // `ingest.fitFraction` × the endpoint window (tokens). The WHOLE merge is
+    // always kept; the HEAD reduces to a digest only on window overflow.
     getContextWindow: () => model.resolve().contextLimit,
     // §8.7 — the non-blocking project-instructions digest. Returns the cached
     // digest on a hit; on a miss returns null and kicks the ingest in the

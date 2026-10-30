@@ -5,7 +5,7 @@
 import { describe, it, expect } from "vitest";
 import {
   computeBudget,
-  headCapTokens,
+  headWarnTokens,
   occupancyPct,
   preflightEstimate,
   resolveUsedTokens,
@@ -15,22 +15,28 @@ import {
 
 describe("budget math (§4.8)", () => {
   it("computes the worked example: 16k window, full head, 2k output reservation", () => {
-    // Given the §4.8 worked example
+    // Given the §4.8 worked example — the head is measured whole (no cap, §4.2.1)
     const window = 16_000;
-    const headTokens = headCapTokens(window, 10); // 1.6k
-    expect(headTokens).toBe(1600);
+    const headTokens = 1600; // a 1.6k head, subtracted whole from the working budget
     // When the budget is computed
     const frame = computeBudget({
       window,
       headTokens,
       outputReservation: 2000,
-      percents: { activeBudgetPct: 20, compactionPct: 40, safetyNetPct: 80, headBudgetPct: 10, noticePcts: [] },
+      percents: { activeBudgetPct: 20, compactionPct: 40, safetyNetPct: 80, headWarnPct: 20, noticePcts: [] },
     });
     // Then working budget = 16k − 1.6k − 2k = 12.4k, active 2.48k, compaction 4.96k, safety 9.92k
     expect(frame.workingBudget).toBe(12_400);
     expect(frame.activeChainTokens).toBe(2480);
     expect(frame.compactionTriggerTokens).toBe(4960);
     expect(frame.safetyNetTriggerTokens).toBe(9920);
+  });
+
+  it("the head WARNING threshold is a share of the window (§4.2.1, not a cap)", () => {
+    // 20% of a 16k window = 3.2k; the fixed context crossing this fires the head
+    // warning but never shortens the head.
+    expect(headWarnTokens(16_000, 20)).toBe(3200);
+    expect(headWarnTokens(1_000_000, 20)).toBe(200_000);
   });
 
   it("fresh session reads 0% occupancy", () => {

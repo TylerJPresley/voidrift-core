@@ -44,7 +44,7 @@ const percents: SizingPercents = {
   activeBudgetPct: 20,
   compactionPct: 40,
   safetyNetPct: 80,
-  headBudgetPct: 10,
+  headWarnPct: 20,
   noticePcts: [],
 };
 

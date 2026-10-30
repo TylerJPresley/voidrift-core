@@ -34,9 +34,9 @@ describe("limits registry (§13.11)", () => {
   });
 
   it("getLimitSpec / limitDefault / limitAreas behave", () => {
-    expect(getLimitSpec("memory.projectChars")?.default).toBe(8000);
+    expect(getLimitSpec("memory.entryChars")?.default).toBe(2200);
     expect(getLimitSpec("nope.nope")).toBeUndefined();
-    expect(limitDefault("memory.projectChars")).toBe(8000);
+    expect(limitDefault("memory.entryChars")).toBe(2200);
     expect(() => limitDefault("nope.nope")).toThrow();
     expect(limitAreas()).toContain("memory");
   });
@@ -57,15 +57,6 @@ describe("limits registry (§13.11)", () => {
     expect(limitDefault("ingest.digestTokens")).toBe(1200);
   });
 
-  it("registers the project-digest budget with an evidence-backed default and bounds", () => {
-    // Owner decision: budget 2000 (14/16 real AGENTS.md fit fully). The
-    // per-section sentence allowance is DERIVED from this single budget
-    // (floor(maxChars / sectionCount)), so there is no separate sentence-cap key.
-    const max = getLimitSpec("memory.projectDigestMaxChars");
-    expect(max).toMatchObject({ default: 2000, unit: "chars", class: "tunable", action: "warn", min: 1 });
-    expect(max?.noLiveOverride).toBeUndefined();
-    expect(getLimitSpec("memory.projectDigestSentenceChars")).toBeUndefined();
-  });
 });
 
 describe("effectiveIngestParallel (§8.7)", () => {
@@ -150,16 +141,16 @@ describe("limits config schema (§13.11)", () => {
 describe("limits layered resolution (§13.11)", () => {
   it("falls back to the registry default when no layer sets it", () => {
     const r = resolveLimits([]);
-    expect(effectiveLimit(r, "memory.projectChars")).toBe(8000);
-    expect(r.values.get("memory.projectChars")?.source).toBe("default");
+    expect(effectiveLimit(r, "memory.entryChars")).toBe(2200);
+    expect(r.values.get("memory.entryChars")?.source).toBe("default");
   });
 
   it("a tunable limit: narrower layer wins and source is tracked", () => {
     const r = resolveLimits([
-      { layer: "global", path: "/g/config.json", limits: { memory: { projectChars: 6000 } } },
-      { layer: "project", path: "/p/config.json", limits: { memory: { projectChars: 4000 } } },
+      { layer: "global", path: "/g/config.json", limits: { memory: { entryChars: 6000 } } },
+      { layer: "project", path: "/p/config.json", limits: { memory: { entryChars: 4000 } } },
     ]);
-    const res = r.values.get("memory.projectChars");
+    const res = r.values.get("memory.entryChars");
     expect(res?.value).toBe(4000);
     expect(res?.source).toBe("project");
     expect(res?.sourcePath).toBe("/p/config.json");

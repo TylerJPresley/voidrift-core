@@ -34,7 +34,6 @@ function harness(opts: {
   limits?: MemoryDeps["limits"];
   listSkillBodies?: MemoryDeps["listSkillBodies"];
   onApproveSkill?: MemoryDeps["onApproveSkill"];
-  projectCharsConfigured?: MemoryDeps["projectCharsConfigured"];
   getContextWindow?: MemoryDeps["getContextWindow"];
   projectDigest?: MemoryDeps["projectDigest"];
 } = {}): Harness {
@@ -49,7 +48,7 @@ function harness(opts: {
     bus,
     sessions,
     suggestions,
-    getBounds: () => ({ entryChars: opts.entryChars ?? 2200, projectChars: 8000, reflectionBatchSize: 3 }),
+    getBounds: () => ({ entryChars: opts.entryChars ?? 2200, reflectionBatchSize: 3 }),
     discoverProjectFiles: async () => opts.projectFiles ?? [],
     readSessionTurns: async () => opts.turns ?? [],
     ...(opts.draftSkillFromSequence ? { draftSkillFromSequence: opts.draftSkillFromSequence } : {}),
@@ -57,7 +56,6 @@ function harness(opts: {
     ...(opts.limits ? { limits: opts.limits } : {}),
     ...(opts.listSkillBodies ? { listSkillBodies: opts.listSkillBodies } : {}),
     ...(opts.onApproveSkill ? { onApproveSkill: opts.onApproveSkill } : {}),
-    ...(opts.projectCharsConfigured ? { projectCharsConfigured: opts.projectCharsConfigured } : {}),
     ...(opts.getContextWindow ? { getContextWindow: opts.getContextWindow } : {}),
     ...(opts.projectDigest ? { projectDigest: opts.projectDigest } : {}),
   };
@@ -197,7 +195,7 @@ describe("§6.6 — project context", () => {
     });
     const ctx = await memory.projectContext();
     expect(ctx.full.indexOf("nested")).toBeGreaterThan(ctx.full.indexOf("root"));
-    expect(ctx.digest.length).toBeGreaterThan(0);
+    expect(ctx.head.length).toBeGreaterThan(0);
   });
 });
 
@@ -264,7 +262,7 @@ describe("§6.7 — reflection → suggestions → approve, with dedup", () => {
       bus,
       sessions: new InMemorySessionRepository(),
       suggestions: new SuggestionsDirectory(new InMemoryFileSystem(), ".voidrift/suggestions"),
-      getBounds: () => ({ entryChars: 2200, projectChars: 8000, reflectionBatchSize: 3 }),
+      getBounds: () => ({ entryChars: 2200, reflectionBatchSize: 3 }),
       discoverProjectFiles: async () => [],
     });
     expect(await memory.reflect("s1", () => [])).toEqual([]);
@@ -341,7 +339,7 @@ describe("§6 — reads, recall without turn-reader, and provider failure isolat
       bus,
       sessions,
       suggestions: new SuggestionsDirectory(new InMemoryFileSystem(), ".voidrift/suggestions"),
-      getBounds: () => ({ entryChars: 2200, projectChars: 8000, reflectionBatchSize: 3 }),
+      getBounds: () => ({ entryChars: 2200, reflectionBatchSize: 3 }),
       discoverProjectFiles: async () => [],
     });
     expect((await memory.recall("alpha")).map((h) => h.sessionId)).toEqual(["s1"]);

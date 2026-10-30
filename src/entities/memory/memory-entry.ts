@@ -7,8 +7,6 @@
  * memory logic stays in the entity layer with no infrastructure imports.
  */
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import { estimateTokens } from "../context/budget.js";
-import { limitDefault } from "../limits.js";
 
 /** The four memory types (§6.2). Each fixes where it loads and who owns it. */
 export type MemoryType = "identity" | "user-model" | "note" | "project";
@@ -172,66 +170,34 @@ export interface MemoryIndexLine {
   keywords: string[];
 }
 
-/** The memory index split by the aggregate cap (§6.2): `active` summaries ride
- * the head; `demoted` ids are keyword-only (still stored, still surfaced by
- * keyword and loadable by id) because the index is full. Nothing is dropped. */
+/** The memory index (§6.2): one `summary` line per agent-written entry, loaded
+ * WHOLE. `demoted` is retained in the shape (always empty) for back-compat with
+ * callers; nothing is ever demoted or capped. */
 export interface MemoryIndex {
   active: MemoryIndexLine[];
   demoted: string[];
 }
 
 /**
- * The aggregate memory-index cap as a fraction of the endpoint window (§6.2,
- * §13.11): default 5% (the `memory.indexCapPct` registry limit), so it scales
- * with `contextLimit` and never crowds the 10% head it shares. The default is
- * read from the limits registry; a use-case passes the effective value from the
- * injected `LimitsPort` so the entity stays pure.
- */
-export function memoryIndexCapPctDefault(): number {
-  return limitDefault("memory.indexCapPct");
-}
-
-/** Token estimate of one rendered index line (`- <id>: <summary>`). */
-function indexLineTokens(line: MemoryIndexLine): number {
-  return estimateTokens(`- ${line.id}: ${line.summary}`);
-}
-
-/**
  * Build the memory index from the agent-written entries in index order (§6.2,
- * §4.6). Every entry contributes a one-line `summary`; the index is bounded to
- * `capPct` of `contextLimit` (token estimate per summary), defaulting to the
- * `memory.indexCapPct` registry limit. When the summaries exceed the cap, the
- * OLDEST entries (first in `entries`) are demoted to keyword-only — still
- * stored, still keyword-discoverable and loadable by id — until the remainder
- * fits; demotion is reversible (room returns → the entry reappears) and never
- * deletes. No event is emitted.
+ * §4.6). Every entry contributes a one-line `summary` and the index loads WHOLE
+ * — nothing is demoted or capped. Its size is part of the uncapped head
+ * (§4.2.1): when the head's fixed context passes `contextHeadWarnPct`, the head
+ * warning names the index among the largest components so the user curates
+ * memory, and the §4.10 hard stop is the only refusal.
  *
- * `entries` is already in index order (global-then-workspace build, §6.2), so
- * "oldest" is simply the front of the list. `capPct` is supplied by a use-case
- * from the injected `LimitsPort`; it defaults to the registry value so the pure
- * entity and its tests need no port.
+ * `entries` is already in index order (global-then-workspace build, §6.2).
+ * `contextLimit` is accepted for signature stability but no longer bounds the
+ * index (the index is never cut).
  */
 export function buildMemoryIndex(
   entries: MemoryEntry[],
-  contextLimit: number,
-  capPct: number = memoryIndexCapPctDefault(),
+  _contextLimit?: number,
 ): MemoryIndex {
   const lines: MemoryIndexLine[] = entries
     .filter((e) => INDEX_TYPES.has(e.type))
     .map((e) => ({ id: e.id, summary: e.summary, keywords: e.keywords }));
-  const cap = Math.max(0, Math.floor(contextLimit * capPct));
-  const total = lines.reduce((sum, l) => sum + indexLineTokens(l), 0);
-  if (total <= cap) return { active: lines, demoted: [] };
-  // Demote oldest-first until the remaining active lines fit the cap.
-  const demoted: string[] = [];
-  let used = total;
-  let start = 0;
-  while (start < lines.length && used > cap) {
-    used -= indexLineTokens(lines[start]!);
-    demoted.push(lines[start]!.id);
-    start += 1;
-  }
-  return { active: lines.slice(start), demoted };
+  return { active: lines, demoted: [] };
 }
 
 /** The character size counted against a per-entry bound (§6.3): the whole body. */

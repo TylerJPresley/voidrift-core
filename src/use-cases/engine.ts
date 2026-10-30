@@ -358,9 +358,9 @@ export interface MemoryContextSource {
   directiveEntries(): { id: string; title: string; summary: string; body: string }[];
   referenceIndex(): { key: string; keywords: string[] }[];
   surfaceByKeywords(query: string): { id: string; title: string; body: string }[];
-  projectContext(): Promise<{ full: string; digest: string; truncated: boolean }>;
+  projectContext(): Promise<{ full: string; head: string; overflow: boolean }>;
   /** The always-present memory index (§4.6, §6.2): one summary line per
-   * agent-written entry, bounded to 5% of the window with oldest-first demotion. */
+   * agent-written entry, loaded WHOLE (no cap, nothing demoted). */
   memoryIndex(contextLimit: number): { active: { id: string; summary: string; keywords: string[] }[]; demoted: string[] };
   /** The in-turn `save_memory` write policy (§6.2): hard-refuses `identity`/
    * `project`, secret-masks, dedups, bounds, read-back-verifies, attributes. */
@@ -385,7 +385,7 @@ export function resolvePercents(config: Config, override?: Partial<SizingPercent
     activeBudgetPct: override?.activeBudgetPct ?? config.contextActiveBudgetPct,
     compactionPct: override?.compactionPct ?? config.contextCompactionPct,
     safetyNetPct: override?.safetyNetPct ?? config.contextSafetyNetPct,
-    headBudgetPct: override?.headBudgetPct ?? config.contextHeadBudgetPct,
+    headWarnPct: override?.headWarnPct ?? config.contextHeadWarnPct,
     noticePcts: override?.noticePcts ?? config.contextNoticePcts,
   };
 }
@@ -1343,7 +1343,7 @@ export class Engine {
   /** The current turn's user input, for reference-memory keyword surfacing (§6.2). */
   private turnInput = "";
   /** The resolved project context for the turn (§6.6), resolved before the call. */
-  private projectCtx: { full: string; digest: string; truncated: boolean } | null = null;
+  private projectCtx: { full: string; head: string; overflow: boolean } | null = null;
 
   /**
    * Resolve the async memory inputs for the turn once (§4.1): the AGENTS.md
@@ -1371,8 +1371,9 @@ export class Engine {
     try {
       const ctx = await this.deps.memory.projectContext();
       this.projectCtx = ctx;
-      // Materialize the full copy to the session cache (§4.2.1 tier 2, §6.6) so
-      // the head carries only the digest + a pointer the model reads on demand.
+      // Materialize the full copy to the session cache (§6.6/§8.7) so the
+      // window-fit overflow notice's pointer resolves to the full file; the head
+      // otherwise carries the whole content inline (§4.2.1 tier 1).
       if (ctx.full.trim() !== "" && this.deps.writeCache) {
         await this.deps.writeCache(session.id, "AGENTS.md", ctx.full);
       }
@@ -1388,7 +1389,8 @@ export class Engine {
   }
 
   /** Build the per-turn snapshot (§4.1). Wires the Void-layer memory seams (§4.6,
-   * §6.2): identity inline, directive + AGENTS.md as digest+pointer, reference as
+   * §6.2): identity inline, AGENTS.md inline (tier 1), directive as digest+pointer,
+   * reference as
    * a manifest surfaced by keyword for the turn. */
   private buildSnapshot(session: Session): ContextSnapshot {
         const snap = emptySnapshot(this.environment(session));
@@ -1424,20 +1426,17 @@ export class Engine {
           pointer: this.cachePointer(session, `memory-${d.id}.md`),
         });
       }
-      // AGENTS.md project context — digest + pointer (tier 2, §6.6).
+      // AGENTS.md project context — inline every turn as a tier-1 item (§6.6,
+      // §4.2.1). The whole merged content rides the head; only when it cannot fit
+      // the window does `head` carry an ingest digest + a notice (the full copy is
+      // materialized to the session cache below, so the pointer resolves).
       if (this.projectCtx && this.projectCtx.full.trim() !== "") {
-        const note = this.projectCtx.truncated ? " (digest — full file via read_file)" : "";
-        snap.digests.push({
-          label: `AGENTS.md${note}`,
-          digest: this.projectCtx.digest,
-          pointer: this.cachePointer(session, "AGENTS.md"),
-        });
+        snap.projectInstructions = this.projectCtx.head;
       }
       // Memory index — a one-line summary manifest for the agent-written
-      // entries (`user-model` and `note`), bounded to an internal 5% of the
-      // window with oldest-first demotion to keyword-only (§4.6, §6.2). A demoted
-      // entry drops out of the always-present index but is still surfaced by
-      // keyword below and loadable by id. Bodies surface by keyword for the turn
+      // entries (`user-model` and `note`), loaded WHOLE (§4.6, §6.2): nothing is
+      // demoted or capped; its size is part of the uncapped head and the head
+      // warning names it when it grows. Bodies surface by keyword for the turn
       // that needs it.
       const memIndex = mem.memoryIndex(this.deps.window);
       snap.referenceMemory = memIndex.active.map((e) => ({ key: e.id, summary: e.summary, keywords: e.keywords }));
@@ -1579,6 +1578,10 @@ export class Engine {
           estimate,
         });
         pipeline.report(frame, used);
+        // §4.2.1 — the head-size warning: when the fixed context (head + bound
+        // tool schemas) passes `contextHeadWarnPct` of the window, fire one
+        // `head` crossing naming the largest components. Cuts nothing.
+        pipeline.reportHead(head);
         return handler({ ...request, systemMessage: message, messages: vis });
       },
       // §4.7 — reasoning never re-enters context. If a provider echoes reasoning

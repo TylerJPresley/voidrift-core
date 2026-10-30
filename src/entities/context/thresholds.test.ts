@@ -34,4 +34,26 @@ describe("ThresholdTracker (§4.8)", () => {
     expect(fired).toContainEqual({ level: "compaction", percentage: 55 });
     expect(fired).toContainEqual({ level: "notice", percentage: 55 });
   });
+
+  it("fires the head crossing once with components and re-arms (§4.2.1)", () => {
+    const t = new ThresholdTracker();
+    const comps = [{ name: "AGENTS.md", tokens: 9600 }];
+    // under the warn threshold → no crossing
+    expect(t.updateHead(10, 20, comps)).toBeNull();
+    // over → fires once with components
+    expect(t.updateHead(60, 20, comps)).toEqual({ level: "head", percentage: 60, components: comps });
+    // still over → no re-fire
+    expect(t.updateHead(60, 20, comps)).toBeNull();
+    // drops below → re-arms silently
+    expect(t.updateHead(10, 20, comps)).toBeNull();
+    // over again → fires again
+    expect(t.updateHead(60, 20, comps)).toEqual({ level: "head", percentage: 60, components: comps });
+  });
+
+  it("the head axis is independent of the occupancy levels (§4.8)", () => {
+    const t = new ThresholdTracker();
+    // an occupancy compaction crossing does not arm or suppress the head level
+    t.update(45, defs);
+    expect(t.updateHead(60, 20, [])).toEqual({ level: "head", percentage: 60, components: [] });
+  });
 });

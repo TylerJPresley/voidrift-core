@@ -4,10 +4,13 @@
  * `CONTEXT_THRESHOLD_CROSSED` fires once per level as working-budget occupancy
  * rises through it and re-arms when occupancy drops back below it — compaction
  * makes the percentage a sawtooth in a long chat — so a level never fires twice
- * without first clearing. Levels: compaction | safety_net | overflow | notice.
+ * without first clearing. Levels: compaction | safety_net | overflow | head |
+ * notice. The `head` level is sized differently (fixed context vs the WINDOW,
+ * §4.2.1) but re-arms the same way and carries the largest head `components`.
  */
+import type { HeadComponent } from "./head.js";
 
-export type ThresholdLevel = "compaction" | "safety_net" | "overflow" | "notice";
+export type ThresholdLevel = "compaction" | "safety_net" | "overflow" | "head" | "notice";
 
 /** A level with its trigger percentage. */
 export interface ThresholdDef {
@@ -15,10 +18,11 @@ export interface ThresholdDef {
   pct: number;
 }
 
-/** A crossing to emit. */
+/** A crossing to emit. `components` is present only on a `head` crossing (§14.6). */
 export interface Crossing {
   level: ThresholdLevel;
   percentage: number;
+  components?: HeadComponent[];
 }
 
 /**
@@ -49,6 +53,30 @@ export class ThresholdTracker {
       }
     }
     return fired;
+  }
+
+  /**
+   * The head-size warning (§4.2.1): fired when the fixed context (head tokens +
+   * bound tool-schema tokens) passes `headWarnPct` of the WINDOW. It is a
+   * SEPARATE axis from working-budget occupancy — a different percentage against
+   * a different base — but re-arms the same way: it fires ONCE when the fixed
+   * context rises through the threshold and re-arms when it drops back below, so
+   * a `head` crossing never fires twice without first clearing. The `components`
+   * (largest head items with their sizes) ride the crossing; the head cuts
+   * nothing (§4.8, §14.6). Returns the single crossing to emit, or `null`.
+   */
+  updateHead(headPct: number, warnPct: number, components: HeadComponent[]): Crossing | null {
+    const key = "head";
+    const isAbove = headPct >= warnPct;
+    const wasCrossed = this.crossed.has(key);
+    if (isAbove && !wasCrossed) {
+      this.crossed.add(key);
+      return { level: "head", percentage: headPct, components };
+    }
+    if (!isAbove && wasCrossed) {
+      this.crossed.delete(key); // re-arm
+    }
+    return null;
   }
 }
 

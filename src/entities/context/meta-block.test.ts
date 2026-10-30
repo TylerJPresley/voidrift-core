@@ -99,9 +99,9 @@ describe("meta block (§4.4)", () => {
     expect(text).toContain("worker-59");
   });
 
-  it("renders all fields without dropping any (bounded by contextHeadBudgetPct, not a separate cap)", () => {
-    // The meta block is bounded only by contextHeadBudgetPct in the head
-    // assembly, so all fields always render.
+  it("renders all fields without dropping any (the head has no cap, §4.2.1)", () => {
+    // The head has no cap and no per-component budget (§4.2.1), so the meta
+    // block always renders every field whole.
     const { text } = renderMetaBlock(facts());
     // all fields render
     expect(text).toContain("cache dir:");

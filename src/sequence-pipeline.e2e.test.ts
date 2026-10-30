@@ -69,7 +69,7 @@ function wire(draftCalls: { n: number }, order: string[]) {
     bus,
     sessions: new InMemorySessionRepository(),
     suggestions,
-    getBounds: () => ({ entryChars: 2200, projectChars: 8000, reflectionBatchSize: 3 }),
+    getBounds: () => ({ entryChars: 2200, reflectionBatchSize: 3 }),
     discoverProjectFiles: async () => [],
     readSessionTurns: async () => [],
     getContextLimit: () => 32768,

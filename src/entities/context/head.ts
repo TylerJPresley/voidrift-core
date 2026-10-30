@@ -9,10 +9,14 @@
  * control on the Agent → Void → turn-metadata stability boundaries (§4.3).
  *
  * The head carries four tiers (§4.2.1): inline-always, digest+pointer,
- * manifest-only, and not-in-head. It is bounded by `contextHeadBudgetPct`
- * (a share of the window); when assembled head content exceeds the cap, lower
- * tiers degrade first — a digest shortens, a manifest truncates with a note — so
- * the inline-always tier and the hard rules are never dropped.
+ * manifest-only, and not-in-head. The head has NO cap and NO per-component
+ * budget: nothing in it is silently shortened, truncated, or swapped for a
+ * digest — every item renders whole, because cutting a head source breaks the
+ * harness's output (§4.2.1). A head WARNING guards size instead: when the fixed
+ * context (the head plus the bound tool schemas) passes `contextHeadWarnPct` of
+ * the window, the engine raises one `CONTEXT_THRESHOLD_CROSSED` `head` crossing
+ * carrying the largest components with their sizes (§4.8, §14.6), cutting
+ * nothing. The §4.10 hard stop is the only refusal.
  */
 import { renderManifestLine, type DocumentManifestLine } from "../document-registry.js";
 import { estimateTokens } from "./budget.js";
@@ -40,6 +44,14 @@ export interface HeadTierSplit {
   manifest: number;
 }
 
+/** A single head component with its token size, for the head-warning payload
+ * (§4.2.1, §14.6): AGENTS.md, tool schemas, the memory index, the skill/manual
+ * manifests, the plan, directive memory, the meta block, and so on. */
+export interface HeadComponent {
+  name: string;
+  tokens: number;
+}
+
 /** The assembled head and its measurements. */
 export interface AssembledHead {
   blocks: ContentBlock[];
@@ -47,52 +59,30 @@ export interface AssembledHead {
   agentTokens: number;
   voidTokens: number;
   tierSplit: HeadTierSplit;
-  /** True when degradation ran because content exceeded the cap. */
-  degraded: boolean;
+  /** The head's components with their token sizes, largest first (§4.2.1). The
+   * head-warning payload reports the largest of these; the head itself cuts
+   * nothing. */
+  components: HeadComponent[];
 }
 
 function join(parts: string[]): string {
   return parts.filter((p) => p.trim() !== "").join("\n\n");
 }
 
-/** Render the inline-always Agent content (§4.2.1 tier 1). Never dropped. */
-function renderInlineAgent(
-  snapshot: ContextSnapshot,
-): string {
-  const parts: string[] = [];
-  if (snapshot.systemPrompt) parts.push(snapshot.systemPrompt);
-  if (snapshot.blockedTools.length > 0) {
-    parts.push(`Blocked tools: ${snapshot.blockedTools.join(", ")}`);
-  }
-  const meta = renderMetaBlock(snapshot.environment);
-  parts.push(meta.text);
-  for (const b of snapshot.agentProviderBlocks) parts.push(b);
-  if (snapshot.hardRules) parts.push(snapshot.hardRules);
-  if (snapshot.identityMemory) parts.push(`Identity:\n${snapshot.identityMemory}`);
-  parts.push(`Status: ${snapshot.planStatus || "no active plan"}`);
-  return join(parts);
+/** Collapse newlines to single spaces in text to prevent header injection (§12.8). */
+function collapseNewlines(text: string): string {
+  return text.replace(/[\r\n\u2028\u2029\u0085]+/g, " ");
 }
 
-/** Render a digest+pointer item (§4.2.1 tier 2). `shorten` degrades the digest. */
-function renderDigest(d: DigestPointer, shorten: boolean): string {
-  const digest = shorten ? d.digest.slice(0, Math.ceil(d.digest.length / 2)).trimEnd() + "…" : d.digest;
-  return `${d.label} (full copy: ${d.pointer}):\n${digest}`;
+/** Render a digest+pointer item whole (§4.2.1 tier 2). */
+function renderDigest(d: DigestPointer): string {
+  return `${d.label} (full copy: ${d.pointer}):\n${d.digest}`;
 }
 
-/** Render a manifest section, truncating with a note when `limit` is set (§4.2.1 tier 3). */
-function renderManifest(
-  title: string,
-  lines: string[],
-  limit: number | null,
-): string {
+/** Render a manifest section whole — one line per item, never truncated (§4.2.1 tier 3). */
+function renderManifest(title: string, lines: string[]): string {
   if (lines.length === 0) return "";
-  let shown = lines;
-  let note = "";
-  if (limit !== null && lines.length > limit) {
-    shown = lines.slice(0, limit);
-    note = `\n… (${lines.length - limit} more truncated to fit the head budget)`;
-  }
-  return `${title}:\n${shown.join("\n")}${note}`;
+  return `${title}:\n${lines.join("\n")}`;
 }
 
 function skillLines(skills: SkillManifestLine[]): string[] {
@@ -110,11 +100,6 @@ function docLines(docs: DocumentManifestLine[]): string[] {
   return docs.map(renderManifestLine);
 }
 
-/** Collapse newlines to single spaces in text to prevent header injection (§12.8). */
-function collapseNewlines(text: string): string {
-  return text.replace(/[\r\n\u2028\u2029\u0085]+/g, " ");
-}
-
 function manualLines(manuals: ManualManifestLine[]): string[] {
   return manuals.map((m) => {
     const summary = collapseNewlines(m.summary);
@@ -124,72 +109,84 @@ function manualLines(manuals: ManualManifestLine[]): string[] {
   });
 }
 
+/** Add a component with its token size when the text is non-empty (§4.2.1). */
+function pushComponent(components: HeadComponent[], name: string, text: string): void {
+  const t = text.trim();
+  if (t === "") return;
+  components.push({ name, tokens: estimateTokens(text) });
+}
+
 /**
- * Assemble the head within `headCap` tokens (§4.2.1). Builds the Agent and Void
- * layers, measures them, and if over the cap degrades lower tiers first: shorten
- * digests, then truncate manifests — never the inline-always tier or hard rules.
+ * Assemble the head (§4.2.1). Builds the Agent and Void layers with every item
+ * rendered WHOLE — no cap, no degradation — and measures them, surfacing the
+ * per-component token sizes so the engine can raise the head warning (§4.8)
+ * without ever shortening a head source.
  */
-export function assembleHead(
-  snapshot: ContextSnapshot,
-  headCap: number,
-): AssembledHead {
-  const inlineAgent = renderInlineAgent(snapshot);
+export function assembleHead(snapshot: ContextSnapshot): AssembledHead {
+  const components: HeadComponent[] = [];
+
+  // --- Agent layer: inline-always (tier 1) + digest+pointer (tier 2) ---
+  const inlineParts: string[] = [];
+  if (snapshot.systemPrompt) {
+    inlineParts.push(snapshot.systemPrompt);
+    pushComponent(components, "system prompt", snapshot.systemPrompt);
+  }
+  if (snapshot.blockedTools.length > 0) {
+    inlineParts.push(`Blocked tools: ${snapshot.blockedTools.join(", ")}`);
+  }
+  const meta = renderMetaBlock(snapshot.environment);
+  inlineParts.push(meta.text);
+  pushComponent(components, "meta block", meta.text);
+  for (const b of snapshot.agentProviderBlocks) inlineParts.push(b);
+  if (snapshot.agentProviderBlocks.length > 0) {
+    pushComponent(components, "agent provider blocks", snapshot.agentProviderBlocks.join("\n\n"));
+  }
+  if (snapshot.hardRules) {
+    inlineParts.push(snapshot.hardRules);
+    pushComponent(components, "hard rules", snapshot.hardRules);
+  }
+  if (snapshot.identityMemory) {
+    inlineParts.push(`Identity:\n${snapshot.identityMemory}`);
+    pushComponent(components, "identity memory", snapshot.identityMemory);
+  }
+  if (snapshot.projectInstructions) {
+    inlineParts.push(`AGENTS.md (project instructions):\n${snapshot.projectInstructions}`);
+    pushComponent(components, "AGENTS.md", snapshot.projectInstructions);
+  }
+  inlineParts.push(`Status: ${snapshot.planStatus || "no active plan"}`);
+  if (snapshot.planStatus) pushComponent(components, "plan status", snapshot.planStatus);
+  const inlineAgent = join(inlineParts);
   const inlineTokens = estimateTokens(inlineAgent);
 
-  const build = (shortenDigests: boolean, manifestLimit: number | null): {
-    agentText: string;
-    voidText: string;
-    digestTokens: number;
-    manifestTokens: number;
-  } => {
-    const digestText = join(snapshot.digests.map((d) => renderDigest(d, shortenDigests)));
-    const voidParts: string[] = [];
-    const docM = renderManifest("Documents", docLines(snapshot.documents), manifestLimit);
-    const skillM = renderManifest("Skills", skillLines(snapshot.skills), manifestLimit);
-    const manualM = renderManifest("Manual", manualLines(snapshot.manuals), manifestLimit);
-    const refM = renderManifest("Memory index", refMemoryLines(snapshot.referenceMemory), manifestLimit);
-    for (const m of [docM, skillM, manualM, refM]) if (m) voidParts.push(m);
-    for (const b of snapshot.voidProviderBlocks) voidParts.push(b);
-    const voidText = join(voidParts);
-    // Digests ride the Agent layer in tier order; keep them with the agent block.
-    const agentText = join([inlineAgent, digestText]);
-    return {
-      agentText,
-      voidText,
-      digestTokens: estimateTokens(digestText),
-      manifestTokens: estimateTokens(voidText),
-    };
-  };
+  const digestText = join(snapshot.digests.map(renderDigest));
+  for (const d of snapshot.digests) pushComponent(components, d.label, `${d.digest}`);
 
-  let degraded = false;
-  let attempt = build(false, null);
-  let headTokens = estimateTokens(attempt.agentText) + estimateTokens(attempt.voidText);
+  const agentText = join([inlineAgent, digestText]);
 
-  if (headTokens > headCap) {
-    // Degrade step 1: shorten digests.
-    degraded = true;
-    attempt = build(true, null);
-    headTokens = estimateTokens(attempt.agentText) + estimateTokens(attempt.voidText);
+  // --- Void layer: manifest-only (tier 3) + void provider blocks ---
+  const docM = renderManifest("Documents", docLines(snapshot.documents));
+  const skillM = renderManifest("Skills", skillLines(snapshot.skills));
+  const manualM = renderManifest("Manual", manualLines(snapshot.manuals));
+  const refM = renderManifest("Memory index", refMemoryLines(snapshot.referenceMemory));
+  pushComponent(components, "document manifest", docM);
+  pushComponent(components, "skills manifest", skillM);
+  pushComponent(components, "manual manifest", manualM);
+  pushComponent(components, "memory index", refM);
+  const voidParts: string[] = [];
+  for (const m of [docM, skillM, manualM, refM]) if (m) voidParts.push(m);
+  for (const b of snapshot.voidProviderBlocks) voidParts.push(b);
+  if (snapshot.voidProviderBlocks.length > 0) {
+    pushComponent(components, "void provider blocks", snapshot.voidProviderBlocks.join("\n\n"));
   }
-  if (headTokens > headCap) {
-    // Degrade step 2: truncate manifests, scaling the limit to the remaining room.
-    const room = Math.max(0, headCap - inlineTokens);
-    // A coarse per-line budget; at least show nothing but the note when desperate.
-    const limit = Math.max(0, Math.floor(room / 40));
-    attempt = build(true, limit);
-    headTokens = estimateTokens(attempt.agentText) + estimateTokens(attempt.voidText);
-  }
+  const voidText = join(voidParts);
 
   const blocks: ContentBlock[] = [];
-  if (attempt.agentText.trim() !== "") {
-    blocks.push({ layer: "agent", text: attempt.agentText, cacheBoundary: true });
-  }
-  if (attempt.voidText.trim() !== "") {
-    blocks.push({ layer: "void", text: attempt.voidText, cacheBoundary: true });
-  }
+  if (agentText.trim() !== "") blocks.push({ layer: "agent", text: agentText, cacheBoundary: true });
+  if (voidText.trim() !== "") blocks.push({ layer: "void", text: voidText, cacheBoundary: true });
 
-  const agentTokens = estimateTokens(attempt.agentText);
-  const voidTokens = estimateTokens(attempt.voidText);
+  const agentTokens = estimateTokens(agentText);
+  const voidTokens = estimateTokens(voidText);
+  components.sort((a, b) => b.tokens - a.tokens);
   return {
     blocks,
     headTokens: agentTokens + voidTokens,
@@ -197,10 +194,10 @@ export function assembleHead(
     voidTokens,
     tierSplit: {
       inline: inlineTokens,
-      digest: attempt.digestTokens,
-      manifest: attempt.manifestTokens,
+      digest: estimateTokens(digestText),
+      manifest: estimateTokens(voidText),
     },
-    degraded,
+    components,
   };
 }
 

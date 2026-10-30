@@ -21,7 +21,7 @@ function harness(entryChars = 2200) {
     bus,
     sessions: new InMemorySessionRepository(),
     suggestions: new SuggestionsDirectory(new InMemoryFileSystem(), ".voidrift/suggestions"),
-    getBounds: () => ({ entryChars, projectChars: 8000, reflectionBatchSize: 3 }),
+    getBounds: () => ({ entryChars, reflectionBatchSize: 3 }),
     discoverProjectFiles: async () => [],
     readSessionTurns: async () => [],
   };
@@ -92,13 +92,15 @@ describe("§6.2/§6.4 — save_memory in-turn policy", () => {
     expect(memory.list()).toHaveLength(1);
   });
 
-  it("surfaceById finds an entry that the cap demoted out of the active index", async () => {
+  it("the memory index loads whole: every entry stays active and findable by id", async () => {
     const { memory } = harness();
     await memory.saveInTurn({ title: "oldest", body: "o".repeat(60), keywords: ["oldest"], type: "note" });
     await memory.saveInTurn({ title: "newest", body: "n", keywords: ["newest"], type: "note" });
-    const window = 200; // tiny cap forces the oldest to demote
+    const window = 200; // a tiny window no longer demotes anything
     const idx = memory.memoryIndex(window);
-    expect(idx.demoted).toContain("oldest");
+    expect(idx.demoted).toEqual([]);
+    expect(idx.active.map((l) => l.id)).toContain("oldest");
+    expect(idx.active.map((l) => l.id)).toContain("newest");
     // Still findable by id (the list_memory/recall load-by-id path) …
     expect(memory.surfaceById("oldest")).not.toBeNull();
     // … and still keyword-discoverable, and NOT deleted.
