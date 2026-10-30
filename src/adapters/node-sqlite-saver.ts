@@ -75,6 +75,13 @@ export class NodeSqliteSaver extends BaseCheckpointSaver {
   private setup(): void {
     if (this.isSetup) return;
 
+    // Enable incremental auto-vacuum BEFORE any table exists, so a NEW database
+    // keeps a free-page list that `PRAGMA incremental_vacuum` can return to the
+    // OS after a delete (deleteThread). This pragma is only honoured on a fresh
+    // file: on an existing database it takes effect solely through a full
+    // VACUUM, which we never run automatically (it needs free disk ≥ file size).
+    // So a legacy auto_vacuum=0 file stays auto_vacuum=0 and behaves as before.
+    this.db.exec("PRAGMA auto_vacuum=INCREMENTAL");
     this.db.exec("PRAGMA journal_mode=WAL");
     this.db.exec("PRAGMA busy_timeout=5000"); // 5s busy timeout for multi-process
 
@@ -451,5 +458,14 @@ export class NodeSqliteSaver extends BaseCheckpointSaver {
       this.db.exec("ROLLBACK");
       throw err;
     }
+
+    // Return the freed pages to the OS. On a database created by this adapter
+    // (auto_vacuum=INCREMENTAL) `incremental_vacuum` moves the deleted rows'
+    // pages onto the free list and truncates the file; under WAL the main file
+    // only shrinks once the WAL is checkpointed with TRUNCATE. On a legacy
+    // auto_vacuum=0 file there is no free-page list, so both pragmas are
+    // no-ops beyond the normal WAL truncate — behaviour is unchanged.
+    this.db.exec("PRAGMA incremental_vacuum");
+    this.db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
   }
 }

@@ -317,3 +317,129 @@ describe("NodeSqliteSaver — file modes", () => {
     saver.close?.();
   });
 });
+
+describe("NodeSqliteSaver — deleteThread reclaims disk (incremental auto_vacuum)", () => {
+  let dir: string;
+  let dbPath: string;
+
+  beforeEach(async () => {
+    dir = hermeticTmp("node-sqlite-vacuum");
+    dbPath = path.join(dir, "checkpoint.db");
+  });
+
+  afterEach(async () => {
+    await fsp.rm(dir, { recursive: true, force: true });
+  });
+
+  /** On-disk footprint of the main db file only (what grows unbounded today). */
+  async function mainSize(p: string): Promise<number> {
+    const { size } = await fs.stat(p);
+    return size;
+  }
+
+  /** Write `n` checkpoints each carrying a ~`blobKB` KB channel value. */
+  async function fillLargeRows(
+    saver: NodeSqliteSaver,
+    thread: string,
+    n: number,
+    blobKB: number
+  ): Promise<void> {
+    const big = "x".repeat(blobKB * 1024);
+    const meta: CheckpointMetadata = { step: 1, source: "loop", parents: {} };
+    for (let i = 0; i < n; i++) {
+      await saver.put(
+        { configurable: { thread_id: thread } },
+        {
+          v: 4,
+          id: `ckpt-${String(i).padStart(5, "0")}`,
+          ts: new Date().toISOString(),
+          channel_values: { blob: big },
+          channel_versions: { blob: 1 },
+          versions_seen: {},
+        },
+        meta,
+        {}
+      );
+    }
+  }
+
+  it("deleteThread on a new DB with many large rows shrinks the file on disk", async () => {
+    const saver = NodeSqliteSaver.fromPath(dbPath);
+
+    // Given a thread with ~80 MB of checkpoint blobs on disk. The first write
+    // runs the adapter's lazy schema setup, which on this fresh file sets
+    // auto_vacuum=INCREMENTAL before creating the tables.
+    await fillLargeRows(saver, "big", 400, 200);
+    const av = saver.database.prepare("PRAGMA auto_vacuum").get() as {
+      auto_vacuum: number;
+    };
+    expect(av.auto_vacuum).toBe(2); // 2 == INCREMENTAL (fresh file)
+    // Consolidate the WAL into the main file so "before" reflects the writes.
+    saver.database.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
+    const before = await mainSize(dbPath);
+    expect(before).toBeGreaterThan(50 * 1024 * 1024);
+
+    // When the only thread is deleted.
+    await saver.deleteThread("big");
+
+    // Then the main file shrinks back toward empty (pages returned to the OS).
+    const after = await mainSize(dbPath);
+    expect(after).toBeLessThan(before * 0.2);
+
+    // And the rows are gone.
+    const tuple = await saver.getTuple({ configurable: { thread_id: "big" } });
+    expect(tuple).toBeUndefined();
+    saver.close?.();
+  });
+
+  it("a legacy auto_vacuum=0 DB still works and does not VACUUM on delete", async () => {
+    // Given a pre-existing database created with auto_vacuum=0 (the old format),
+    // populated and then opened by the current adapter.
+    const { DatabaseSync } = await import("node:sqlite");
+    {
+      const legacy = new DatabaseSync(dbPath);
+      legacy.exec("PRAGMA auto_vacuum=0");
+      legacy.exec("PRAGMA journal_mode=WAL");
+      legacy.exec(`CREATE TABLE checkpoints (
+        thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '',
+        checkpoint_id TEXT NOT NULL, parent_checkpoint_id TEXT, type TEXT,
+        checkpoint BLOB, metadata BLOB,
+        PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id))`);
+      legacy.exec(`CREATE TABLE writes (
+        thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '',
+        checkpoint_id TEXT NOT NULL, task_id TEXT NOT NULL, idx INTEGER NOT NULL,
+        channel TEXT NOT NULL, type TEXT, value BLOB,
+        PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx))`);
+      legacy.close();
+    }
+
+    const saver = NodeSqliteSaver.fromPath(dbPath);
+    // Opening the adapter must NOT convert an existing file: it stays 0.
+    const av = saver.database.prepare("PRAGMA auto_vacuum").get() as {
+      auto_vacuum: number;
+    };
+    expect(av.auto_vacuum).toBe(0);
+
+    // The adapter still reads and writes normally against the legacy schema.
+    await fillLargeRows(saver, "legacy", 50, 50);
+    const got = await saver.getTuple({ configurable: { thread_id: "legacy" } });
+    expect(got).toBeDefined();
+
+    saver.database.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
+    const before = await mainSize(dbPath);
+
+    // deleteThread succeeds and removes the rows; with auto_vacuum=0 the file
+    // is NOT shrunk (no VACUUM) — behaviour is exactly as before this change.
+    await saver.deleteThread("legacy");
+    const avAfter = saver.database.prepare("PRAGMA auto_vacuum").get() as {
+      auto_vacuum: number;
+    };
+    expect(avAfter.auto_vacuum).toBe(0); // still unconverted
+    const after = await mainSize(dbPath);
+    expect(after).toBe(before); // no reclaim on a legacy file
+
+    const gone = await saver.getTuple({ configurable: { thread_id: "legacy" } });
+    expect(gone).toBeUndefined();
+    saver.close?.();
+  });
+});
