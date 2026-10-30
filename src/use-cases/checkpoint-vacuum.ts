@@ -155,7 +155,15 @@ export function vacuumCheckpointStore(
   // (c) Refuse unless free disk ≥ 2×(db+wal): VACUUM writes a full temporary copy.
   const free = freeDisk(dbPath);
   const needed = 2 * sizeBefore;
-  if (free !== null && free < needed) {
+  if (free === null) {
+    return err(
+      coreError(
+        ErrorCode.INVALID_INPUT,
+        `cannot determine free disk for ${dbPath}: need ≥ ${needed} bytes (2× the ${sizeBefore}-byte store+WAL) free to vacuum`,
+      ),
+    );
+  }
+  if (free < needed) {
     return err(
       coreError(
         ErrorCode.INVALID_INPUT,

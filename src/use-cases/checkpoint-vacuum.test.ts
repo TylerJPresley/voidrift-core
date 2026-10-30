@@ -141,6 +141,20 @@ describe("vacuumCheckpointStore (§13.9.1)", () => {
     expect(fs.readdirSync(dir).some((f) => f.startsWith("checkpoint.db.bak-"))).toBe(false);
   });
 
+  it("unreadable free disk (probe → null) → refuses, store untouched", () => {
+    makeLegacyStore(dbPath, 20);
+    const before = fs.readFileSync(dbPath);
+
+    // The free-disk probe cannot determine free space (§13.9.1): refuse.
+    const r = vacuumCheckpointStore(dbPath, () => null);
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.error.message).toMatch(/free disk/i);
+    expect(autoVacuumOf(dbPath)).toBe(0);
+    expect(fs.readFileSync(dbPath).equals(before)).toBe(true);
+    expect(fs.readdirSync(dir).some((f) => f.startsWith("checkpoint.db.bak-"))).toBe(false);
+  });
+
   it("absent store → nothing to do (a fresh workspace with no sessions)", () => {
     const r = vacuumCheckpointStore(dbPath, () => 10 * 1024 * 1024 * 1024);
     expect(r.ok).toBe(true);
