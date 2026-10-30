@@ -149,19 +149,28 @@ describe("buildCoreTools over a LocalShellBackend (§8.2)", () => {
     expect(scoped.length).toBeGreaterThan(0);
   });
 
-  it("search_contents {pattern, include?} finds lines, rejects a path glob, reports no match", async () => {
+  it("search_contents {pattern, include?} finds lines, handles a path-style include, reports no match", async () => {
     const found = await call(byName(tools, "search_contents"), { pattern: "line two" });
     expect(found).toContain("a.txt:");
-    const bad = await call(byName(tools, "search_contents"), { pattern: "x", include: "sub/x" });
-    expect(bad).toBe("Error: invalid 'include': filename glob only");
-    // A1 guard: an over-long include glob is rejected before reaching the backend.
+    // §8.2 — a path-style include with a GLOB in the directory part is rejected.
+    const bad = await call(byName(tools, "search_contents"), { pattern: "x", include: "sr*/x.ts" });
+    expect(bad).toBe("Error: include is a filename glob such as *.ts; put the directory in path");
+    // §8.2 — a plain filename glob is unchanged and still searches.
+    const plain = await call(byName(tools, "search_contents"), { pattern: "line two", include: "*.txt" });
+    expect(plain).toContain("a.txt:");
+    // §8.2 — include too long is rejected with the exact message before parsing.
     const longInclude = await call(byName(tools, "search_contents"), {
       pattern: "x",
-      include: "{" + "a,".repeat(2000) + "a}",
+      include: "a".repeat(1100),
     });
-    expect(longInclude).toContain("too long");
+    expect(longInclude).toBe("Error: 'include' too long (max 1024 characters)");
     const none = await call(byName(tools, "search_contents"), { pattern: "zzz-not-present-zzz" });
     expect(none).toBe("No matches found.");
+    // §8.2 — a derived directory escaping the workspace is confined exactly as a
+    // `path` argument is: the escape is DENIED before the backend runs, so a
+    // file OUTSIDE the workspace is never matched (no leak).
+    const escaped = await call(byName(tools, "search_contents"), { pattern: "line two", include: "../*.txt" });
+    expect(escaped).toBe("Error: path escapes the workspace");
   });
 
   it("write_file {path, content} creates and overwrites with a diff block", async () => {
@@ -207,7 +216,7 @@ describe("buildCoreTools over a LocalShellBackend (§8.2)", () => {
       ["read_file", { path: "nope.txt" }],
       ["edit_file", { path: "a.txt", search: "", replace: "x" }],
       ["edit_file", { path: "a.txt", search: "absent-string", replace: "x" }],
-      ["search_contents", { pattern: "x", include: "sub/x" }],
+      ["search_contents", { pattern: "x", include: "sr*/x.ts" }],
     ];
     for (const [name, args] of failing) {
       const msg = await byName(tools, name).invoke(args as never);

@@ -409,8 +409,10 @@ describe("Engine decision point (§9.1)", () => {
       chatModelFactory: factory(script),
     });
     const started: string[] = [];
+    const finished: Array<{ name: string; status: string }> = [];
     const denied: string[] = [];
     api.events.subscribe("TOOL_STARTED", (e) => started.push((e.payload as { name: string }).name));
+    api.events.subscribe("TOOL_FINISHED", (e) => finished.push(e.payload as { name: string; status: string }));
     api.events.subscribe("PERMISSION_DENIED", (e) => denied.push((e.payload as { tool: string }).tool));
     const created = await api.session.create({});
     const id = created.ok ? created.value.id : "";
@@ -420,8 +422,12 @@ describe("Engine decision point (§9.1)", () => {
     // The write was denied before execution; the file never appeared.
     expect(await fs.readFile(path.join(ws, "d.txt"), "utf8").catch(() => null)).toBeNull();
     expect(denied).toContain("write_file");
-    // A free read would bracket; here only the denied write was attempted (no TOOL_STARTED).
-    expect(started).not.toContain("write_file");
+    // §8.1/§9.1 — the denied write is still BRACKETED: exactly one TOOL_STARTED
+    // and one TOOL_FINISHED {status:"error"}, yet it never executed (no file).
+    expect(started.filter((n) => n === "write_file")).toHaveLength(1);
+    const writeFinishes = finished.filter((f) => f.name === "write_file");
+    expect(writeFinishes).toHaveLength(1);
+    expect(writeFinishes[0]!.status).toBe("error");
   });
 
   it("a free read brackets with TOOL_STARTED and TOOL_FINISHED", async () => {

@@ -28,7 +28,7 @@ import { RESEARCHER_SAVE_NOTES_SCHEMA } from "./research-notes.js";
 import { SAVE_MEMORY_SCHEMA, LIST_MEMORY_SCHEMA, DELETE_MEMORY_SCHEMA } from "./memory-tools.js";
 import { TASK_SCHEMA } from "./task-tool.js";
 import { INGEST_SCHEMA, INGEST_TOOL_NAME } from "./ingest-tool.js";
-import { validateGlobPattern } from "../entities/glob-validate.js";
+import { validateGlobPattern, MAX_GLOB_PATTERN_LENGTH } from "../entities/glob-validate.js";
 import { classifyReadPath, type ControlPathContext } from "../entities/protected-paths.js";
 import { runCommand } from "../adapters/command-runner.js";
 import type { LimitsPort } from "../entities/ports/limits-port.js";
@@ -172,6 +172,82 @@ function countLines(content: string): number {
 function globPatternError(pattern: string, field: string): string | null {
   const reason = validateGlobPattern(pattern);
   return reason === null ? null : `Error: '${field}' glob pattern rejected: ${reason}`;
+}
+
+/** The §8.2 rejection for an `include` whose directory part carries a glob. */
+export const SEARCH_INCLUDE_BAD_DIR =
+  "Error: include is a filename glob such as *.ts; put the directory in path";
+
+/** The §8.2 rejection for a search root that escapes the workspace/worktree. */
+export const SEARCH_ROOT_ESCAPE = "Error: path escapes the workspace";
+
+/**
+ * Lexically normalize a workspace-relative search root and confine it to the
+ * workspace (§8.2 opening): a value that resolves ABOVE the root (a leading
+ * `..`) is an escape. Returns the normalized relative root, or `null` when it
+ * escapes. The SAME confinement applies whether the root came from the `path`
+ * argument or a derived `include` directory, so an include can never reach
+ * where a `path` could not. PURE.
+ */
+function confineRoot(root: string): string | null {
+  const parts = root.split("/").filter((p) => p !== "" && p !== ".");
+  const stack: string[] = [];
+  for (const p of parts) {
+    if (p === "..") {
+      if (stack.length === 0) return null; // escapes above the workspace root
+      stack.pop();
+    } else {
+      stack.push(p);
+    }
+  }
+  return stack.length === 0 ? "." : stack.join("/");
+}
+
+/**
+ * Parse a `search_contents {include}` value (§8.2). The harness is LIBERAL: a
+ * path-style value such as `src/**​/*.ts` is taken APART rather than rejected.
+ * The LAST `/`-segment is the filename glob the search applies; the leading
+ * segments are the directory part. In the directory part a `**` segment is
+ * IGNORED (the search is already recursive) and each remaining segment must be a
+ * PLAIN literal (no `*`, `?`, `[`, `{`) — any other glob there is rejected with
+ * {@link SEARCH_INCLUDE_BAD_DIR}. The derived literal directory becomes a path
+ * restriction, folded into `path` when given, else relative to the workspace
+ * root, and confined exactly as a `path` argument is ({@link SEARCH_ROOT_ESCAPE}
+ * when it escapes). A value with no separator is unchanged (it is already the
+ * filename glob). PURE.
+ *
+ * Returns `{ root, include }` for the backend grep, or `{ error }` on a bad dir
+ * or a root that escapes the workspace.
+ */
+export function parseSearchInclude(
+  include: string | undefined,
+  path: string | undefined,
+): { root: string; include: string | null } | { error: string } {
+  const basePath = path && path !== "" ? path : "";
+  const finalize = (rawRoot: string, inc: string | null): { root: string; include: string | null } | { error: string } => {
+    const confined = confineRoot(rawRoot);
+    if (confined === null) return { error: SEARCH_ROOT_ESCAPE };
+    return { root: confined, include: inc };
+  };
+  if (!include) {
+    return finalize(basePath || ".", null);
+  }
+  if (!include.includes("/")) {
+    return finalize(basePath || ".", include); // already a filename glob
+  }
+  const segments = include.split("/");
+  const filename = segments[segments.length - 1]!;
+  const dirSegments = segments.slice(0, -1);
+  const literalDirs: string[] = [];
+  for (const seg of dirSegments) {
+    if (seg === "**") continue; // recursive search already
+    if (seg === "") continue; // a leading/`//` empty segment
+    if (/[*?[\]{}]/.test(seg)) return { error: SEARCH_INCLUDE_BAD_DIR }; // a glob in the dir part
+    literalDirs.push(seg);
+  }
+  const dirPart = literalDirs.join("/");
+  const rawRoot = [basePath, dirPart].filter((p) => p !== "").join("/") || ".";
+  return finalize(rawRoot, filename);
 }
 
 /**
@@ -351,14 +427,28 @@ export function buildCoreTools(
 
   const searchContents = tool(
     async ({ pattern, path, include }, config) => {
-      if (include && (include.includes("/") || include.includes("\\"))) {
-        return toolError("Error: invalid 'include': filename glob only", config);
+      // §8.2 — the same length cap `glob_files` applies to `pattern`
+      // (`MAX_GLOB_PATTERN_LENGTH`), checked BEFORE the include reaches the glob
+      // engine or is parsed.
+      if (include && include.length > MAX_GLOB_PATTERN_LENGTH) {
+        return toolError(`Error: 'include' too long (max ${MAX_GLOB_PATTERN_LENGTH} characters)`, config);
       }
-      if (include) {
-        const bad = globPatternError(include, "include");
+      // §8.2 — LIBERAL include: a path-style value is taken apart into a path
+      // restriction (literal leading dirs, `**` ignored) plus the filename glob
+      // (the last segment); any other glob in the dir part is rejected. The
+      // derived directory is folded into `path`/the workspace root and confined
+      // by the backend exactly as a `path` argument is.
+      const parsedInclude = parseSearchInclude(include, path);
+      if ("error" in parsedInclude) {
+        return toolError(parsedInclude.error, config);
+      }
+      const { root, include: filenameGlob } = parsedInclude;
+      if (filenameGlob) {
+        // §8.2 — the derived filename glob is validated by the ONE shared glob
+        // validator (the A1 mitigation, GHSA-vfj7-8cjw-p6xm).
+        const bad = globPatternError(filenameGlob, "include");
         if (bad) return toolError(bad, config);
       }
-      const root = path && path !== "" ? path : ".";
       // §8.2 — the content search is bounded by a wall-clock timeout. On a
       // timeout it falls back to a glob-based FILENAME search (the pattern is
       // matched against file names, not contents), capped at
@@ -370,7 +460,7 @@ export function buildCoreTools(
       let timer: ReturnType<typeof setTimeout> | undefined;
       const searchTimeoutMs = cfg.limits ? cfg.limits.get("tools.searchTimeoutMs") : SEARCH_CONTENTS_TIMEOUT_MS;
       const raced = await Promise.race([
-        backend.grep(pattern, root, include ?? null, 100),
+        backend.grep(pattern, root, filenameGlob, 100),
         new Promise<typeof SEARCH_TIMEOUT>((resolve) => {
           timer = setTimeout(() => resolve(SEARCH_TIMEOUT), searchTimeoutMs);
         }),

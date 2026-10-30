@@ -177,8 +177,10 @@ describe("Worker gate — STEP 0 proof: a worker's ungated calls are now stopped
       .respondWithTools([{ name: "execute_command", args: { command: "git push --force origin main" } }])
       .respond(new AIMessage("done"));
     const started: string[] = [];
+    const finished: Array<{ name: string; status: string }> = [];
     const denied: unknown[] = [];
     bus.subscribe("TOOL_STARTED", (e) => started.push((e.payload as { name: string }).name));
+    bus.subscribe("TOOL_FINISHED", (e) => finished.push(e.payload as { name: string; status: string }));
     bus.subscribe("PERMISSION_DENIED", (e) => denied.push(e.payload));
     const vcs = new RealDirVcs(root);
     const sa = new Subagents(
@@ -188,9 +190,15 @@ describe("Worker gate — STEP 0 proof: a worker's ungated calls are now stopped
 
     const res = await sa.dispatch([{ agent: "coder", task: "push" }]);
 
-    // The force-ask was rejected before execution — execute_command never started.
+    // The force-ask was rejected before execution. §8.1/§9.1: the call is now
+    // BRACKETED (one TOOL_STARTED + one TOOL_FINISHED {status:"error"}) yet never
+    // EXECUTES — there is no successful execute_command finish, and
+    // PERMISSION_DENIED "rejected" rides alongside.
     expect(denied.some((p) => (p as { reason: string }).reason === "rejected")).toBe(true);
-    expect(started).not.toContain("execute_command");
+    const execFinishes = finished.filter((f) => f.name === "execute_command");
+    expect(execFinishes).toHaveLength(1);
+    expect(execFinishes[0]!.status).toBe("error"); // denied, not executed
+    expect(started.filter((n) => n === "execute_command")).toHaveLength(1); // bracketed exactly once
     expect(res.workers[0]!.status).toBe("merged"); // the worker loop continued after rejection
   });
 

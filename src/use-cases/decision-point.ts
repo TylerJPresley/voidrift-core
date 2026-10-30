@@ -49,6 +49,7 @@ import {
 import { type BaseMessage } from "@langchain/core/messages";
 import type { LoopHealth } from "../entities/loop-health.js";
 import { toolCounts } from "./tool-counts.js";
+import { coerceStringArrays, validateToolArgs } from "../entities/tool-args.js";
 
 /** Resolve a path's real location (symlinks followed) for the `rm -rf`
  * within-workdir symlink guard (§D1.4). Throws on a non-existent path so
@@ -403,8 +404,48 @@ export function createDecisionMiddleware(deps: DecisionPointDeps, ctx: CallerCon
       const toolCallId = request.toolCall.id ?? `${name}-${Date.now()}`;
       const scope = scopeOf(ctx);
 
+      // §8.1 / §9.1 — the PIPELINE-LEVEL bracketing guarantee. TOOL_STARTED is
+      // emitted ONCE here, at the very top, so EVERY call the model emits —
+      // success, tool error, a denial (permission, compliance, managed layer,
+      // unknown tool), or invalid arguments — is bracketed by exactly one
+      // TOOL_STARTED and exactly one TOOL_FINISHED, whatever the outcome. No
+      // deny/invalid path can start without finishing: every `return` below
+      // flows through `finish()`, the ONE place TOOL_FINISHED is emitted. This
+      // same guarantee covers the worker path, which shares this middleware
+      // (§15.1#4). `args` is masked downstream by the obs-writer (§10.10).
+      const start = Date.now();
+      bus.emit("TOOL_STARTED", { id: toolCallId, name, args }, scope);
+
+      /** The ONE TOOL_FINISHED emit (§8.1/§14.6): status, durationMs, and a
+       * one-line `summary` (the trimmed result, an eviction handle, or the
+       * one-line reason when `status: "error"`) plus honest counts from the full
+       * result. Every return path routes through here so a call can never start
+       * without finishing. Accepts a non-`ToolMessage` handler result (a raw
+       * string) too and returns the value unchanged. */
+      const finish = <T>(msg: T): T => {
+        const isTm = msg instanceof ToolMessage;
+        const fullText = isTm ? String(msg.content) : typeof msg === "string" ? msg : "";
+        const summary = fullText.slice(0, 500);
+        const status = isTm && msg.status === "error" ? "error" : "success";
+        const counts = isTm ? toolCounts(name, fullText, 500) : undefined;
+        bus.emit(
+          "TOOL_FINISHED",
+          {
+            id: toolCallId,
+            name,
+            status,
+            durationMs: Date.now() - start,
+            summary,
+            ...(counts ? { lines: counts.lines, truncated: counts.truncated } : {}),
+            ...(counts?.entries ? { entries: counts.entries } : {}),
+          },
+          scope,
+        );
+        return msg;
+      };
+
       const deny = (reason: string): ToolMessage =>
-        new ToolMessage({ content: `Error: ${reason}`, tool_call_id: toolCallId, status: "error" });
+        finish(new ToolMessage({ content: `Error: ${reason}`, tool_call_id: toolCallId, status: "error" }));
 
       // §8.1 / §9.1 step 1 — unknown-tool reject: a hallucinated tool never
       // executes and never reaches the gate; the error result feeds the loop.
@@ -412,15 +453,36 @@ export function createDecisionMiddleware(deps: DecisionPointDeps, ctx: CallerCon
       // (not on its `tools` list) also arrives here as `def === null`. Emit a
       // PERMISSION_DENIED carrying `cause: "unknown_tool"` so a host can COUNT
       // the active agent's posture refusals (the read-only-run "N action(s)
-      // denied" line, cli §8.3) without parsing the summary string.
+      // denied" line, cli §8.3) without parsing the summary string. It is
+      // bracketed with its STARTED (above) and its FINISHED (via `finish`).
       if (def === null) {
         bus.emit("PERMISSION_DENIED", { tool: name, reason: `unknown tool: ${name}`, cause: "unknown_tool" }, scope);
-        bus.emit(
-          "TOOL_FINISHED",
-          { id: toolCallId, name, status: "error", durationMs: 0, summary: `unknown tool: ${name}` },
-          scope,
-        );
         return deny(`unknown tool: ${name}`);
+      }
+
+      // §8.1 / §9.1 step 1 — central, schema-driven argument pre-processing,
+      // BEFORE anything else. First "liberal in what it accepts": a single
+      // string the model sent for a string-ARRAY field is comma-split into the
+      // array the schema expects, driven from the tool's OWN schema (string
+      // arrays only), applied to the guard copy AND the raw args the handler
+      // receives; the schema the model is bound to is unchanged. Then Zod-
+      // validate: a call whose arguments still fail the schema after coercion is
+      // caught HERE — never escaping to LangChain's ToolNode (which would emit a
+      // raw-stack ToolMessage with a STARTED but no FINISHED) — and returns the
+      // `invalid arguments for <tool>: <field>: <issue>` error (field + issue
+      // only, ≤~500 chars, no stack, no path), bracketed and never executed.
+      {
+        const coerced = coerceStringArrays(args, def.schema);
+        for (const k of Object.keys(coerced)) {
+          if (coerced[k] !== args[k]) {
+            args[k] = coerced[k];
+            rawArgs[k] = coerced[k];
+          }
+        }
+        const validation = validateToolArgs(name, args, def.schema);
+        if (!validation.ok) {
+          return deny(validation.message);
+        }
       }
 
       // §13.5 / §8.4 — the managed-layer gate fails closed for EVERY call. Read-
@@ -555,13 +617,13 @@ export function createDecisionMiddleware(deps: DecisionPointDeps, ctx: CallerCon
             }
             // The guidance tool result the model sees; marked `lane_limit` so a
             // host never tallies it as a permission denial. Nothing executed.
-            return new ToolMessage({
+            return finish(new ToolMessage({
               content: laneGuidance(decision.which, decision.counts),
               tool_call_id: toolCallId,
               status: "error",
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               additional_kwargs: { cause: "lane_limit" } as any,
-            });
+            }));
           }
           // Not blocked — RESERVE the slot now (atomic under concurrent tool
           // calls in one message). Rolled back below if a user reject or a
@@ -765,9 +827,8 @@ export function createDecisionMiddleware(deps: DecisionPointDeps, ctx: CallerCon
         }
       }
 
-      // §9.1 step 8 — execute, bracketed by TOOL_STARTED/TOOL_FINISHED (§8.1).
-      bus.emit("TOOL_STARTED", { id: toolCallId, name, args }, scope);
-      const start = Date.now();
+      // §9.1 step 8 — execute (bracketed by the TOOL_STARTED emitted at the top
+      // of the pipeline and the single TOOL_FINISHED emitted via `finish`).
       const result = await handler(request);
 
       // §10.11 — append the single journal entry (FAIL-CLOSED). A denied/rejected
@@ -837,7 +898,7 @@ export function createDecisionMiddleware(deps: DecisionPointDeps, ctx: CallerCon
         }
       }
       if (journalError) {
-        return new ToolMessage({ content: `Error: ${journalError}`, tool_call_id: toolCallId, status: "error" });
+        return finish(new ToolMessage({ content: `Error: ${journalError}`, tool_call_id: toolCallId, status: "error" }));
       }
 
       // §9.1 step 8 — record read/write marks for the unread/stale guardrail.
@@ -970,28 +1031,9 @@ export function createDecisionMiddleware(deps: DecisionPointDeps, ctx: CallerCon
         }
       }
 
-      const fullText = final instanceof ToolMessage ? String(final.content) : "";
-      const summary = fullText.slice(0, 500);
-      const status = final instanceof ToolMessage && final.status === "error" ? "error" : "success";
-      // §14.6 — carry honest counts computed from the FULL result (not the
-      // capped summary) so a client never undercounts a big result; counts only,
-      // no body (secrets never ride these numeric fields). The 500 is the SAME
-      // cap as the `summary` slice above (the @slice:500 trail clip, DP2).
-      const counts = final instanceof ToolMessage ? toolCounts(name, fullText, 500) : undefined;
-      bus.emit(
-        "TOOL_FINISHED",
-        {
-          id: toolCallId,
-          name,
-          status,
-          durationMs: Date.now() - start,
-          summary,
-          ...(counts ? { lines: counts.lines, truncated: counts.truncated } : {}),
-          ...(counts?.entries ? { entries: counts.entries } : {}),
-        },
-        scope,
-      );
-      return final;
+      // §8.1/§9.1 — the single TOOL_FINISHED for the executed call (summary and
+      // honest counts computed inside `finish` from the full result).
+      return finish(final);
     },
   });
 }
