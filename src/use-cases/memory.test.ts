@@ -5,7 +5,7 @@
  * suggestions → approve + dedup (§6.7), and the secret-scrubbed provider contract
  * (§6.8). Deterministic, offline, in-memory store (§15.3).
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { Memory, type MemoryDeps } from "./memory.js";
 import { InMemoryMemoryStore } from "../adapters/repositories/in-memory-memory-store.js";
 import { SuggestionsDirectory } from "../adapters/suggestions-directory.js";
@@ -15,6 +15,7 @@ import { InMemorySessionRepository } from "../adapters/repositories/session-repo
 import type { MemoryStore } from "../entities/ports/memory-store.js";
 import type { TurnRecord } from "../entities/memory/memory-provider.js";
 import type { ProjectFile } from "../entities/memory/project-context.js";
+import * as projectContextModule from "../entities/memory/project-context.js";
 
 interface Harness {
   memory: Memory;
@@ -196,6 +197,34 @@ describe("§6.6 — project context", () => {
     const ctx = await memory.projectContext();
     expect(ctx.full.indexOf("nested")).toBeGreaterThan(ctx.full.indexOf("root"));
     expect(ctx.head.length).toBeGreaterThan(0);
+  });
+
+  it("merges the project text exactly once and the digest sees the same merged text", async () => {
+    const files: ProjectFile[] = [
+      { path: "AGENTS.md", content: "root", depth: 0, scope: "workspace" },
+      { path: "pkg/AGENTS.md", content: "nested", depth: 1, scope: "workspace" },
+    ];
+    const mergeSpy = vi.spyOn(projectContextModule, "mergeFull");
+    let digestSaw: string | null = null;
+    try {
+      const { memory } = harness({
+        projectFiles: files,
+        projectDigest: (full) => {
+          digestSaw = full;
+          return null;
+        },
+      });
+      const ctx = await memory.projectContext();
+      // One merge for the whole call (no double merge/hash on the same text).
+      expect(mergeSpy).toHaveBeenCalledTimes(1);
+      // The digest lookup and the returned context agree on the merged text.
+      expect(digestSaw).toBe(ctx.full);
+      // Behaviour unchanged: ordering and whole-head preserved.
+      expect(ctx.full.indexOf("nested")).toBeGreaterThan(ctx.full.indexOf("root"));
+      expect(ctx.overflow).toBe(false);
+    } finally {
+      mergeSpy.mockRestore();
+    }
   });
 });
 

@@ -91,8 +91,9 @@ export function assembleProjectHead(
   files: ProjectFile[],
   budgetChars: number,
   cachedDigest: string | null = null,
+  precomputedFull?: string,
 ): ProjectContext {
-  const full = mergeFull(files);
+  const full = precomputedFull ?? mergeFull(files);
   const hash = contentHash(full);
   if (full.length <= budgetChars) {
     // Fits the window: the whole content rides the head (tier 1, §4.2.1).

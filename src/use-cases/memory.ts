@@ -47,6 +47,7 @@ import {
 import type { SuggestionsDirectory } from "../adapters/suggestions-directory.js";
 import {
   assembleProjectHead,
+  mergeFull,
   type ProjectFile,
   type ProjectContext,
 } from "../entities/memory/project-context.js";
@@ -538,9 +539,9 @@ export class Memory {
     // Consult the digest cache FIRST so a cached digest rides the head when the
     // merge cannot fit the window; a miss kicks the ingest in the background
     // (fire-and-forget) — the turn is never blocked on a worker fan-out (§8.7).
-    const full = assembleProjectHead(files, budget, null).full;
+    const full = mergeFull(files);
     const cached = this.deps.projectDigest ? this.deps.projectDigest(full, hashOf(full)) : null;
-    const ctx = assembleProjectHead(files, budget, cached);
+    const ctx = assembleProjectHead(files, budget, cached, full);
     if (ctx.overflow && this.deps.limits) {
       this.deps.limits.hit("ingest.fitFraction", ctx.full.length, {
         what: "project instructions cannot fit the window; an ingest digest rides the head",
