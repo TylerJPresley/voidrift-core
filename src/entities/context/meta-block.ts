@@ -113,7 +113,7 @@ function lines(env: EnvironmentFacts): string[] {
   out.push(`  OS: ${safe(env.platform)} ${safe(env.osRelease)}`);
   out.push(`  shell: ${safe(env.shell)}`);
   out.push(`  date: ${safe(env.date)} (${safe(env.timeZone)})`);
-  out.push("  note: each command runs fresh in PWD — a `cd` does not persist");
+  out.push("  note: each command starts fresh in PWD, which is already where you want to be; a directory change inside one command is gone for the next");
   // ── Repository ──────────────────────────────────────────────────────────
   if (env.gitBranch) {
     const detail = env.gitDirty ? ` (${safe(env.gitDirty)})` : "";
