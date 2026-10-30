@@ -22,6 +22,7 @@
  * crosses the facade — the facade reads the DTOs in `entities/subagents.ts`.
  */
 import { AIMessage, type BaseMessage } from "@langchain/core/messages";
+import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons";
 import { createAgent, createMiddleware } from "langchain";
 import type { ResponseFormat } from "langchain";
 import {
@@ -1429,6 +1430,28 @@ export class Subagents {
     return w;
   }
 
+  /**
+   * Run a worker agent's `invoke` ISOLATED from the orchestrator's run tree
+   * (§7, §14.6: `TOKEN_STREAM`/`REASONING_STREAM` are session-scoped and carry
+   * ONLY the orchestrator model's chunks). A worker runs inside the
+   * orchestrator's turn, whose own streaming run (engine.ts, `messages` stream
+   * mode) is
+   * collecting LLM token events through the ambient callback manager that
+   * LangChain threads via `AsyncLocalStorage` (`ensureConfig` merges the implicit
+   * parent config — including its callbacks — into every child `invoke`). Without
+   * isolation the worker's model chunks surface in the orchestrator's `messages`
+   * stream and leak out UNSCOPED as orchestrator `TOKEN_STREAM`/`REASONING_STREAM`.
+   * Running the invoke under a fresh (empty) runnable config severs that
+   * inheritance so the worker's model events never reach the parent's stream —
+   * provider-agnostic (any `BaseChatModel`), no public event shape changed. The
+   * worker's own observability (MODEL_USAGE, WORKER_STATUS_CHANGED, tool events)
+   * is emitted by its middleware directly onto the bus with `{ session, worker }`
+   * scope, independent of this run tree.
+   */
+  private invokeIsolated<T>(fn: () => Promise<T>): Promise<T> {
+    return AsyncLocalStorageProviderSingleton.runWithConfig(undefined, fn, true);
+  }
+
   /** Invoke the worker agent and extract a structured result. */
   private async invokeAgent(
     def: AgentDefinition,
@@ -1454,9 +1477,11 @@ export class Subagents {
       }
       const agent = this.buildWorker(def, rootDir, ctx, stagingRun, undefined, responseFormat);
       const cfg = this.deps.getConfig();
-      const invokeResult = (await agent.invoke(
-        { messages: [{ role: "user", content: task }] },
-        { recursionLimit: cfg.subagentRecursionLimit, signal },
+      const invokeResult = (await this.invokeIsolated(() =>
+        agent.invoke(
+          { messages: [{ role: "user", content: task }] },
+          { recursionLimit: cfg.subagentRecursionLimit, signal },
+        ),
       )) as { messages: BaseMessage[]; structuredResponse?: unknown };
       // §3.8 — a valid typed result is JSON-serialized as the summary that
       // converges to the orchestrator; otherwise the worker's final text.
@@ -1502,9 +1527,11 @@ export class Subagents {
       // public `AgentDefinition.model` string key (invariant 14).
       const agent = this.buildWorker(reviewerDef, rootDir, { fanoutId: ctx.fanoutId, workerId: `${ctx.workerId}-reviewer` }, stagingRun, this.deps.reviewerModel);
       const cfg = this.deps.getConfig();
-      const result = (await agent.invoke(
-        { messages: [{ role: "user", content: `Task: ${task}\nReview the work.` }] },
-        { recursionLimit: cfg.subagentRecursionLimit, signal },
+      const result = (await this.invokeIsolated(() =>
+        agent.invoke(
+          { messages: [{ role: "user", content: `Task: ${task}\nReview the work.` }] },
+          { recursionLimit: cfg.subagentRecursionLimit, signal },
+        ),
       )) as { messages: BaseMessage[] };
       const verdict = this.lastText(result.messages ?? []);
       // Deterministic criterion: PASS present, FAIL absent (§7.5 direct path).
