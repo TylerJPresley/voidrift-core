@@ -87,4 +87,31 @@ describe("host-level config.doctor (§13.9.2)", () => {
     const ep = report.groups.find((g) => g.id === "models")!.findings.find((f) => f.id === "models.endpoint.x");
     expect(ep?.message).toContain("skipped (offline)");
   });
+
+  it("warns on a legacy checkpoint store (auto_vacuum=0) and leaves the file BYTE-IDENTICAL (§5.2, §13.9.2)", async () => {
+    const { workspace } = await isolate();
+    const { DatabaseSync } = await import("node:sqlite");
+    const stateDir = path.join(workspace, ".voidrift");
+    await fs.mkdir(stateDir, { recursive: true });
+    const dbPath = path.join(stateDir, "checkpoint.db");
+    // A real legacy store: auto_vacuum=0 with a table and rows.
+    const db = new DatabaseSync(dbPath);
+    db.exec("PRAGMA auto_vacuum=NONE");
+    db.exec("CREATE TABLE checkpoints (thread_id TEXT, blob BLOB)");
+    const stmt = db.prepare("INSERT INTO checkpoints VALUES (?, ?)");
+    for (let i = 0; i < 20; i++) stmt.run(`t${i}`, "x".repeat(512));
+    db.prepare("PRAGMA wal_checkpoint(TRUNCATE)").get();
+    db.close();
+    await fs.chmod(dbPath, 0o600);
+
+    const before = await fs.readFile(dbPath);
+    const report = await doctorConfigHome({ offline: true, workspaceRoot: workspace });
+    const vac = report.groups
+      .find((g) => g.id === "storage")!
+      .findings.find((f) => f.id === "storage.checkpoint-vacuum");
+    expect(vac?.status).toBe("warn");
+    expect(vac?.fix).toBe("voidrift init --vacuum");
+    // READ-ONLY: doctor leaves the checkpoint store byte-for-byte unchanged.
+    expect((await fs.readFile(dbPath)).equals(before)).toBe(true);
+  });
 });

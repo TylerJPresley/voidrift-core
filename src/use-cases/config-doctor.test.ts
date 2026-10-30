@@ -672,6 +672,42 @@ describe("config.doctor (§13.9.2)", () => {
     expect(statusOf(report, "storage.checkpoint-mode")).toBeUndefined();
   });
 
+  it("STORAGE: a legacy checkpoint store (auto_vacuum=0) warns with fix `voidrift init --vacuum`; a new one is ok; an absent one yields no finding (§5.2, §13.9.2)", async () => {
+    const c = await cap({ global: seedConfigDocument() });
+    const base = {
+      modeOf: async () => 0o700,
+      isSymlink: async () => false,
+      freeBytes: async () => 10 * 1024 * 1024 * 1024,
+      dirUsable: async () => true,
+      readFile: async () => null,
+      listDirs: async () => [],
+      gitConfigScan: async () => [],
+    };
+    // Legacy (0) → warn with the exact fix.
+    const legacy = await runDoctor(
+      baseDeps({ config: c, storage: { ...base, checkpointAutoVacuum: async () => 0 } }),
+      { offline: true },
+    );
+    const lF = legacy.groups.find((g) => g.id === "storage")!.findings.find((x) => x.id === "storage.checkpoint-vacuum");
+    expect(lF?.status).toBe("warn");
+    expect(lF?.fix).toBe("voidrift init --vacuum");
+    expect(legacy.summary.fail).toBe(0); // advisory, never fails the run
+
+    // New (2 INCREMENTAL) → ok.
+    const fresh = await runDoctor(
+      baseDeps({ config: c, storage: { ...base, checkpointAutoVacuum: async () => 2 } }),
+      { offline: true },
+    );
+    expect(statusOf(fresh, "storage.checkpoint-vacuum")).toBe("ok");
+
+    // Absent/unreadable → no finding.
+    const absent = await runDoctor(
+      baseDeps({ config: c, storage: { ...base, checkpointAutoVacuum: async () => null } }),
+      { offline: true },
+    );
+    expect(statusOf(absent, "storage.checkpoint-vacuum")).toBeUndefined();
+  });
+
   it("STORAGE: executable-capable keys in the workspace .git/config warn (S2)", async () => {
     const c = await cap({ global: seedConfigDocument() });
     const deps = baseDeps({

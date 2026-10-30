@@ -167,6 +167,14 @@ export interface StorageProbe {
    * `plan:` key), never a prompt, goal, step, or any value. `{ routines: [],
    * plans: [] }` when the dir is absent. */
   registryCounts?(registryDir: string): Promise<{ routines: string[]; plans: string[] }>;
+
+  // ── Checkpoint store vacuum mode (§5.2, §13.9.2), read-only. Optional: a
+  // probe that does not supply it disables the vacuum-mode check. ──
+  /** The workspace checkpoint store's `PRAGMA auto_vacuum` value (0 NONE, 1
+   * FULL, 2 INCREMENTAL), read from the store opened READ-ONLY so doctor holds
+   * no write lock and leaves the file byte-identical. Returns null when the
+   * store is absent or cannot be opened (then no finding is emitted). */
+  checkpointAutoVacuum?(dbPath: string): Promise<number | null>;
 }
 
 /** The injected surface `config.doctor` reads (all read-only). */
@@ -1163,6 +1171,27 @@ async function checkStorage(ctx: Ctx): Promise<DoctorFinding[]> {
     out.push(warnF("storage.checkpoint-mode", `checkpoint db ${dbPath} mode is ${modeStr(dbMode)} (expected 0600)`, `chmod 600 ${dbPath}`, { file: dbPath }));
   } else if (dbMode !== null) {
     out.push(okF("storage.checkpoint-mode", `checkpoint db ${dbPath} is 0600`));
+  }
+
+  // The checkpoint store's vacuum mode (§5.2, §13.9.2): a store created before
+  // core d865bf8 has `auto_vacuum=0` (NONE) and never shrinks. Read the pragma
+  // from the store opened READ-ONLY (doctor holds no lock and leaves the file
+  // byte-identical); warn with the fix `voidrift init --vacuum` when it is not
+  // `2` (INCREMENTAL). An absent/unreadable store yields no finding.
+  if (st.checkpointAutoVacuum) {
+    const av = await st.checkpointAutoVacuum(dbPath);
+    if (av !== null && av !== 2) {
+      out.push(
+        warnF(
+          "storage.checkpoint-vacuum",
+          `checkpoint db ${dbPath} has auto_vacuum=${av} (not INCREMENTAL); it never reclaims freed space`,
+          "voidrift init --vacuum",
+          { file: dbPath },
+        ),
+      );
+    } else if (av === 2) {
+      out.push(okF("storage.checkpoint-vacuum", `checkpoint db ${dbPath} auto_vacuum is INCREMENTAL`));
+    }
   }
 
   // The workspace `.git/config` executable-capable keys: a cloned/untrusted

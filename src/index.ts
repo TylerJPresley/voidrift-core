@@ -90,6 +90,8 @@ export { sweepConfigHome, scanLiveLeftovers } from "./boot.js";
 export type { ConfigSweepResult } from "./use-cases/config-init.js";
 export { migrateConfigHome } from "./boot.js";
 export type { ConfigMigrateResult } from "./use-cases/config-init.js";
+export { vacuumConfigHome } from "./boot.js";
+export type { CheckpointVacuumResult } from "./use-cases/checkpoint-vacuum.js";
 export type {
   DoctorReport,
   DoctorGroup,

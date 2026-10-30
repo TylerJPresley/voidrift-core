@@ -411,6 +411,20 @@ export async function migrateConfigHome(
   return new ConfigInit(new NodeInitFs(), voidriftConfigDir(), seedAgentsDir).migrate(dir);
 }
 
+/** Apply `voidrift init --vacuum` (§13.9.1, §5.2): convert the workspace
+ * checkpoint store (`<dir>/.voidrift/checkpoint.db`) from `auto_vacuum=0` (the
+ * legacy default) to `INCREMENTAL`, so a later `deleteThread` returns freed
+ * space to the OS. Host-level: no core, no model, no network. The conversion
+ * logic lives in the core use-case; this only resolves the store path and runs
+ * it. `dir` defaults to the current working directory. */
+export async function vacuumConfigHome(
+  dir: string = process.cwd(),
+): Promise<import("./entities/errors.js").Result<import("./use-cases/checkpoint-vacuum.js").CheckpointVacuumResult>> {
+  const { vacuumCheckpointStore } = await import("./use-cases/checkpoint-vacuum.js");
+  const dbPath = path.join(dir, ".voidrift", "checkpoint.db");
+  return vacuumCheckpointStore(dbPath);
+}
+
 /**
  * Scan the GLOBAL and PROJECT live resource directories (`agents/`, `skills/`,
  * `prompts/`) for backup- or editor-leftover files (§13.9.1, §12.1). A live
@@ -932,6 +946,27 @@ function makeStorageProbe(): import("./use-cases/config-doctor.js").StorageProbe
     async checkIgnore(workspaceRoot: string) {
       const res = await runHardenedGit(workspaceRoot, ["check-ignore", "-q", "--", ".voidrift/"]);
       return res.ok;
+    },
+
+    async checkpointAutoVacuum(dbPath: string) {
+      // READ-ONLY open (§13.9.2): doctor holds no write lock and leaves the file
+      // byte-identical. Absent/unreadable store → null (no finding).
+      try {
+        await fsp.access(dbPath);
+      } catch {
+        return null;
+      }
+      const { DatabaseSync } = await import("node:sqlite");
+      let db: InstanceType<typeof DatabaseSync> | null = null;
+      try {
+        db = new DatabaseSync(dbPath, { readOnly: true });
+        const row = db.prepare("PRAGMA auto_vacuum").get() as { auto_vacuum?: number } | undefined;
+        return typeof row?.auto_vacuum === "number" ? row.auto_vacuum : null;
+      } catch {
+        return null;
+      } finally {
+        db?.close();
+      }
     },
   };
 }
