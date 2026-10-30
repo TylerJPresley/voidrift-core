@@ -63,49 +63,33 @@ export interface MoveFiles {
   notUndoable: NotUndoable[];
 }
 
-/** The max size (bytes) of a stored rolling summary on a move (§10.12). Over the
- * cap the summary is DROPPED (`rollingSummaryDropped: true`) so the timeline file
- * stays bounded; restoring such a move restores NO summary (the model re-reads). */
-export const MOVE_ROLLING_SUMMARY_MAX_BYTES = 16 * 1024;
-
 /**
  * The CONTEXT half of a move (§10.12): the session/metadata state that is
  * injected into every model request but does NOT live in a checkpoint channel,
  * so traversal must set it from the TARGET move (pointer 0 = none/initial).
  * Recorded at the end of the turn that produced the move.
  *   - `rollingSummary` — the compaction summary string in effect after the turn
- *     (§4.9). Capped at {@link MOVE_ROLLING_SUMMARY_MAX_BYTES}; over the cap it is
- *     omitted and `rollingSummaryDropped` is set so restore applies no summary.
+ *     (§4.9). Stored as produced; it is already bounded by the summary budget
+ *     (a ratio of the window, §4.9), so no separate byte cap applies.
  *   - `usageAnchor` — the persisted usage anchor (max input_tokens seen, §4.8)
  *     that backs the context% meter and cost totals after the turn.
  * All fields are part of the signed canonical JSON of the timeline.
  */
 export interface MoveContext {
   rollingSummary?: string;
-  rollingSummaryDropped?: boolean;
   usageAnchor?: number;
 }
 
 /**
- * Build a {@link MoveContext} from the post-turn session values (§10.12),
- * enforcing the rolling-summary byte cap. Over the cap the summary is dropped
- * and `rollingSummaryDropped` is recorded. PURE.
+ * Build a {@link MoveContext} from the post-turn session values (§10.12). The
+ * rolling summary is stored as produced — it is already bounded by the summary
+ * budget (§4.9), so no separate byte cap applies. PURE.
  */
-export function buildMoveContext(
-  input: { rollingSummary?: string; usageAnchor?: number },
-  opts: { rollingSummaryMaxBytes?: number } = {},
-): MoveContext {
-  const maxBytes = opts.rollingSummaryMaxBytes ?? MOVE_ROLLING_SUMMARY_MAX_BYTES;
+export function buildMoveContext(input: { rollingSummary?: string; usageAnchor?: number }): MoveContext {
   const ctx: MoveContext = {};
   if (input.usageAnchor !== undefined) ctx.usageAnchor = input.usageAnchor;
   const summary = input.rollingSummary;
-  if (summary !== undefined && summary !== "") {
-    if (Buffer.byteLength(summary, "utf8") > maxBytes) {
-      ctx.rollingSummaryDropped = true;
-    } else {
-      ctx.rollingSummary = summary;
-    }
-  }
+  if (summary !== undefined && summary !== "") ctx.rollingSummary = summary;
   return ctx;
 }
 

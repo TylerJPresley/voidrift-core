@@ -158,30 +158,30 @@ describe("limits layered resolution (§13.11)", () => {
 
   it("a safety limit: a project RAISE is ignored and warned", () => {
     const r = resolveLimits([
-      { layer: "global", path: "/g", limits: { plugins: { optionsMaxBytes: 65536 } } },
-      { layer: "project", path: "/p/config.json", limits: { plugins: { optionsMaxBytes: 1_000_000 } } },
+      { layer: "global", path: "/g", limits: { tools: { imageMaxBytes: 65536 } } },
+      { layer: "project", path: "/p/config.json", limits: { tools: { imageMaxBytes: 1_000_000 } } },
     ]);
-    expect(effectiveLimit(r, "plugins.optionsMaxBytes")).toBe(65536);
-    const w = r.warnings.find((x) => x.key === "plugins.optionsMaxBytes");
+    expect(effectiveLimit(r, "tools.imageMaxBytes")).toBe(65536);
+    const w = r.warnings.find((x) => x.key === "tools.imageMaxBytes");
     expect(w?.layer).toBe("project");
     expect(w?.path).toBe("/p/config.json");
   });
 
   it("a safety limit: a project LOWER is honored (no warning)", () => {
     const r = resolveLimits([
-      { layer: "global", limits: { plugins: { optionsMaxBytes: 65536 } } },
-      { layer: "project", limits: { plugins: { optionsMaxBytes: 1024 } } },
+      { layer: "global", limits: { tools: { imageMaxBytes: 65536 } } },
+      { layer: "project", limits: { tools: { imageMaxBytes: 1024 } } },
     ]);
-    expect(effectiveLimit(r, "plugins.optionsMaxBytes")).toBe(1024);
+    expect(effectiveLimit(r, "tools.imageMaxBytes")).toBe(1024);
     expect(r.warnings.length).toBe(0);
   });
 
   it("a managed ceiling wins: a global raise above managed is capped", () => {
     const r = resolveLimits([
-      { layer: "managed", limits: { plugins: { optionsMaxBytes: 2048 } } },
-      { layer: "global", limits: { plugins: { optionsMaxBytes: 65536 } } },
+      { layer: "managed", limits: { tools: { imageMaxBytes: 2048 } } },
+      { layer: "global", limits: { tools: { imageMaxBytes: 65536 } } },
     ]);
-    expect(effectiveLimit(r, "plugins.optionsMaxBytes")).toBe(2048);
+    expect(effectiveLimit(r, "tools.imageMaxBytes")).toBe(2048);
   });
 
   it("an integrity limit: a project LOWER is ignored and warned (journal.maxEntries)", () => {

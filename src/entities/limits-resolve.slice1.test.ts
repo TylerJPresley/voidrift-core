@@ -85,20 +85,20 @@ describe("resolveLimits: action cascading (SLICE 1)", () => {
   });
 
   it("project object-form raise of safety key VALUE is ignored with warning but ACTION still applies", () => {
-    // Use plugins.optionsMaxBytes which is a known safety limit
-    const spec = LIMITS.find((l) => l.key === "plugins.optionsMaxBytes")!;
+    // Use tools.imageMaxBytes which is a known safety limit
+    const spec = LIMITS.find((l) => l.key === "tools.imageMaxBytes")!;
     const specDefault = spec.default;
 
     const result = resolveLimits([
       {
         layer: "global",
-        limits: { plugins: { optionsMaxBytes: specDefault } },
+        limits: { tools: { imageMaxBytes: specDefault } },
       },
       {
         layer: "project",
         limits: {
-          plugins: {
-            optionsMaxBytes: {
+          tools: {
+            imageMaxBytes: {
               value: specDefault + 1000, // RAISE it (should be ignored)
               action: "deny", // but set action to deny
             },
@@ -107,7 +107,7 @@ describe("resolveLimits: action cascading (SLICE 1)", () => {
       },
     ]);
 
-    const resolved = result.values.get("plugins.optionsMaxBytes")!;
+    const resolved = result.values.get("tools.imageMaxBytes")!;
     // Value stays at global (raise was ignored)
     expect(resolved.value).toBe(specDefault);
     expect(resolved.source).toBe("global");
@@ -115,7 +115,7 @@ describe("resolveLimits: action cascading (SLICE 1)", () => {
     expect(resolved.action).toBe("deny");
     // Check that warning was recorded for the value
     expect(result.warnings.length).toBeGreaterThan(0);
-    expect(result.warnings[0]!.key).toBe("plugins.optionsMaxBytes");
+    expect(result.warnings[0]!.key).toBe("tools.imageMaxBytes");
   });
 
   it("session layer action overrides project action (narrowest layer wins)", () => {

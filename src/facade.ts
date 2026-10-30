@@ -459,7 +459,7 @@ export class CoreAPI {
    * context, or `null` for pointer 0 (session start).
    *
    * Per-field classification of session state that lives OUTSIDE the checkpoint:
-   *   - rollingSummary  — RESTORE from the move (null/dropped → cleared). It is
+   *   - rollingSummary  — RESTORE from the move (null → cleared). It is
    *     injected into every request (context-pipeline deriveView), so a stale
    *     summary would describe now-undone turns.
    *   - usageAnchor     — RESTORE from the move. Backs the context% meter and
@@ -484,7 +484,7 @@ export class CoreAPI {
     context: import("./entities/rollback.js").MoveContext | null,
   ): void {
     // RESTORE — context state injected into every request.
-    if (context?.rollingSummary !== undefined && !context.rollingSummaryDropped) {
+    if (context?.rollingSummary !== undefined) {
       session.rollingSummary = {
         summary: context.rollingSummary,
         // The folded-through turn is re-derived on the next compaction; keep a
@@ -493,8 +493,8 @@ export class CoreAPI {
         updatedAt: new Date().toISOString(),
       };
     } else {
-      // null context (session start), a dropped (over-cap) summary, or a move
-      // with no summary → no summary applied; the model re-reads/re-folds.
+      // null context (session start) or a move with no summary → no summary
+      // applied; the model re-reads/re-folds.
       delete session.rollingSummary;
     }
     if (session.rollingSummary) session.metadata.rollingSummary = session.rollingSummary;

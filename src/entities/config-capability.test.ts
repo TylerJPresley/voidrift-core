@@ -675,13 +675,13 @@ describe("ConfigCapability (§13)", () => {
 
     it("limitsView surfaces an ignored safety-raise warning", async () => {
       const { cap } = make({
-        global: { limits: { plugins: { optionsMaxBytes: 65536 } } },
-        project: { limits: { plugins: { optionsMaxBytes: 1_000_000 } } },
+        global: { limits: { tools: { imageMaxBytes: 65536 } } },
+        project: { limits: { tools: { imageMaxBytes: 1_000_000 } } },
       });
       await cap.load();
       const { limits, warnings } = cap.limitsView();
-      expect(limits.find((l) => l.key === "plugins.optionsMaxBytes")!.value).toBe(65536);
-      expect(warnings.some((w) => w.key === "plugins.optionsMaxBytes" && w.layer === "project")).toBe(true);
+      expect(limits.find((l) => l.key === "tools.imageMaxBytes")!.value).toBe(65536);
+      expect(warnings.some((w) => w.key === "tools.imageMaxBytes" && w.layer === "project")).toBe(true);
     });
 
     it("a legacy top-level alias key (snapshotCount) resolves through the registry, same value as the nested key", async () => {

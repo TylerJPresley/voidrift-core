@@ -1413,7 +1413,6 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
   const rollbackService = new RollbackService({
     store: snapshotStore,
     getSnapshotCount: () => limits.get("rollback.snapshotCount"),
-    getLimit: (key) => limits.get(key),
     emit: (type, payload, sessionId) => bus.emit(type, payload, { session: sessionId }),
     // §10.11 — each applied rollback step is itself a write action journaled as
     // tool `rollback`, target = the restored paths, undoHint = the opposite cmd.

@@ -1001,11 +1001,11 @@ describe("doctor: limits group (§13.11)", () => {
 
   it("WARNs naming the key, layer and file when a project layer tries to RAISE a safety limit", async () => {
     const c = await cap({
-      global: { ...seedConfigDocument(), limits: { plugins: { optionsMaxBytes: 65536 } } },
-      project: { limits: { plugins: { optionsMaxBytes: 1_000_000 } } },
+      global: { ...seedConfigDocument(), limits: { tools: { imageMaxBytes: 65536 } } },
+      project: { limits: { tools: { imageMaxBytes: 1_000_000 } } },
     });
     const report = await runDoctor(baseDeps({ config: c }), { offline: true });
-    const w = limitsGroup(report).findings.find((f) => f.id === "limits.safety-raise.plugins.optionsMaxBytes");
+    const w = limitsGroup(report).findings.find((f) => f.id === "limits.safety-raise.tools.imageMaxBytes");
     expect(w?.status).toBe("warn");
     expect(w?.layer).toBe("project");
     expect(w?.file).toBe("memory://project");

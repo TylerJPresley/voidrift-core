@@ -104,10 +104,6 @@ export interface RollbackServiceDeps {
   /** The configured `snapshotCount` (§13.10); read fresh each call so a config
    * change takes effect. 0 disables rollback. */
   getSnapshotCount: () => number;
-  /** Read an effective limit value (§13.11); read fresh each call. Used for
-   * `rollback.rollingSummaryMaxBytes` (ROLL2). Optional: absent in unit tests
-   * (falls back to the entity default). */
-  getLimit?: (key: string) => number;
   /** Emit an event (`MOVE_RECORDED` / `MOVES_PRUNED` / `ROLLBACK_APPLIED`),
    * id/count/method only, never file content (§10.12, §14.6). */
   emit: (type: string, payload: unknown, sessionId: string) => void;
@@ -336,9 +332,7 @@ export class RollbackService {
       conversation: { beforeCheckpointId, afterCheckpointId: afterId },
       files: { method: fileMethod, paths, notUndoable },
       // §10.12 — the context half: post-turn session state outside the checkpoint.
-      context: buildMoveContext(context ?? {}, {
-        ...(this.deps.getLimit ? { rollingSummaryMaxBytes: this.deps.getLimit("rollback.rollingSummaryMaxBytes") } : {}),
-      }),
+      context: buildMoveContext(context ?? {}),
     };
 
     // Record on the timeline (drops the redo branch, returns dropped ids).

@@ -14,7 +14,6 @@ import {
   prune,
   isUndoable,
   MOVE_SUMMARY_MAX,
-  MOVE_ROLLING_SUMMARY_MAX_BYTES,
   HARNESS_NOTE_MAX,
   TIMELINE_SCHEMA_VERSION,
   buildMoveContext,
@@ -314,37 +313,17 @@ describe("buildMoveContext + schema version (§10.12)", () => {
     expect(emptyTimeline().version).toBe(3);
   });
 
-  it("carries a summary + anchor under the cap", () => {
+  it("carries a summary + anchor", () => {
     expect(buildMoveContext({ rollingSummary: "s", usageAnchor: 42 })).toEqual({ rollingSummary: "s", usageAnchor: 42 });
   });
 
-  it("drops a summary over the 16 KiB cap and records rollingSummaryDropped", () => {
-    const ctx = buildMoveContext({ rollingSummary: "x".repeat(MOVE_ROLLING_SUMMARY_MAX_BYTES + 1), usageAnchor: 7 });
-    expect(ctx.rollingSummary).toBeUndefined();
-    expect(ctx.rollingSummaryDropped).toBe(true);
+  it("stores a large (64 KiB) rolling summary verbatim; empty/absent is omitted", () => {
+    const big = "x".repeat(64 * 1024);
+    const ctx = buildMoveContext({ rollingSummary: big, usageAnchor: 7 });
+    expect(ctx.rollingSummary).toBe(big);
     expect(ctx.usageAnchor).toBe(7);
-  });
-
-  it("keeps a summary exactly at the cap; an empty/absent summary is omitted", () => {
-    const at = buildMoveContext({ rollingSummary: "x".repeat(MOVE_ROLLING_SUMMARY_MAX_BYTES) });
-    expect(at.rollingSummary).toHaveLength(MOVE_ROLLING_SUMMARY_MAX_BYTES);
-    expect(at.rollingSummaryDropped).toBeUndefined();
     expect(buildMoveContext({})).toEqual({});
     expect(buildMoveContext({ rollingSummary: "" })).toEqual({});
-  });
-
-  // §13.11 (ROLL2) — the rolling-summary byte cap is now an OPTION threaded from
-  // the limits registry; the const is only the default. Behaviour is byte-
-  // identical when the option is absent (covered above).
-  it("honors an explicit rollingSummaryMaxBytes option (ROLL2 convert)", () => {
-    // A tiny effective cap drops a summary the default would have kept.
-    const dropped = buildMoveContext({ rollingSummary: "x".repeat(100) }, { rollingSummaryMaxBytes: 10 });
-    expect(dropped.rollingSummary).toBeUndefined();
-    expect(dropped.rollingSummaryDropped).toBe(true);
-    // A larger effective cap keeps a summary the default (16 KiB) would also keep.
-    const kept = buildMoveContext({ rollingSummary: "y".repeat(100) }, { rollingSummaryMaxBytes: 1000 });
-    expect(kept.rollingSummary).toHaveLength(100);
-    expect(kept.rollingSummaryDropped).toBeUndefined();
   });
 });
 

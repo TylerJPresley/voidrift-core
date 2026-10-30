@@ -313,17 +313,17 @@ describe("RollbackService (§10.12)", () => {
     expect(restores.at(-1)).toEqual({ rollingSummary: "[VOIDRIFT SUMMARY v1]\nolder work", usageAnchor: 300 });
   });
 
-  it("drops an over-cap rolling summary on the move (rollingSummaryDropped) and restores no summary", async () => {
+  it("stores a large (64 KiB) rolling summary on the move and restores it on rewind", async () => {
     cp = 0;
     const { service, restores } = svc();
-    const huge = "x".repeat(17 * 1024); // > 16 KiB cap
+    const huge = "x".repeat(64 * 1024); // well over the former 16 KiB cap
     await chatTurn(service, 1, "m1", { rollingSummary: huge, usageAnchor: 50 });
     await chatTurn(service, 2, "m2");
     const report = await service.moves(SID);
-    expect(report.moves![0]!.context).toEqual({ rollingSummaryDropped: true, usageAnchor: 50 });
+    expect(report.moves![0]!.context).toEqual({ rollingSummary: huge, usageAnchor: 50 });
     restores.length = 0;
     await service.undo(SID); // → move 1
-    expect(restores.at(-1)).toEqual({ rollingSummaryDropped: true, usageAnchor: 50 });
+    expect(restores.at(-1)).toEqual({ rollingSummary: huge, usageAnchor: 50 });
   });
 
   it("does NOT restore context on a no-op traversal (already at the end/start)", async () => {

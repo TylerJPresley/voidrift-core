@@ -6,7 +6,7 @@ type: reference
 
 # Configuration Limits
 
-VoidRift has **98** configurable limits across **24** areas. Each is a
+VoidRift has **97** configurable limits across **24** areas. Each is a
 key under `limits.<area>.<name>`; a `tunable` limit follows the normal cascade (the
 narrower layer wins), a `safety` limit may only be *lowered* by a project/session layer,
 and an `integrity` limit may only be *raised* by a project/session layer (it protects an
@@ -144,7 +144,6 @@ audit/restore guarantee, so lowering it from an untrusted project config is igno
 | Key | Unit | Class | Meaning |
 |---|---|---|---|
 | `rollback.snapshotCount` | count | integrity | Recent moves kept for rollback (0 disables; 0 allowed only from the global layer). |
-| `rollback.rollingSummaryMaxBytes` | bytes | tunable | Rolling-summary byte cap. |
 | `rollback.harnessNoteMaxChars` | chars | tunable | Rollback harness-note char cap. |
 | `rollback.cachePerFileBytes` | bytes | integrity | Cache snapshot: per-file byte cap (lowering drops files from a restore). |
 | `rollback.cacheSessionBytes` | bytes | integrity | Cache snapshot: per-session byte cap (lowering drops a restore's completeness). |
@@ -154,7 +153,7 @@ audit/restore guarantee, so lowering it from an untrusted project config is igno
 
 | Key | Unit | Class | Meaning |
 |---|---|---|---|
-| `worktree.includeCapBytes` | bytes | safety | Worktree include total byte cap (DoS bound). |
+| `worktree.includeCapBytes` | bytes | tunable | Worktree include total byte cap (DoS bound). |
 | `worktree.includeMaxEntries` | count | safety | Max worktree-include entries per layer. |
 
 ## `limits.journal`
@@ -185,7 +184,7 @@ audit/restore guarantee, so lowering it from an untrusted project config is igno
 
 | Key | Unit | Class | Meaning |
 |---|---|---|---|
-| `plugins.optionsMaxBytes` | bytes | safety | Plugin options byte cap (payload bound). |
+| `plugins.optionsMaxBytes` | bytes | tunable | Plugin options byte cap (payload bound). |
 | `plugins.registryFileMaxBytes` | bytes | safety | Registry file byte cap (§12.5): file over limit is set aside as .rejected on deny, accepted on warn with LIMIT_HIT. |
 | `plugins.registryValueMaxBytes` | bytes | safety | Registry per-value byte cap (§12.5): value over limit is refused on deny, stored on warn with LIMIT_HIT. |
 | `plugins.searchMaxBytes` | bytes | safety | Plugin registry search response byte cap. |
