@@ -19,7 +19,12 @@
  * structurally (messages + systemMessage), never imported, keeping this layer
  * free of a crossing type.
  */
-import { estimateTokens, ESTIMATE_MARGIN_TOKENS } from "./budget.js";
+import { ESTIMATE_MARGIN_TOKENS, clampRatio, CHARS_PER_TOKEN } from "./budget.js";
+
+/** Which count drove a `CONTEXT_OVERFLOW` refusal (§4.8, §4.10): an exact
+ * endpoint `countTokens`, the measured chars/token ratio, or the default ratio
+ * (4, before any measurement). */
+export type OverflowSource = "endpoint" | "ratio" | "default";
 
 /** The `CONTEXT_OVERFLOW` event payload (§4.10). */
 export interface ContextOverflow {
@@ -27,6 +32,9 @@ export interface ContextOverflow {
   maxOutputTokens: number;
   limit: number;
   message: string;
+  /** Which count drove the refusal (§4.8). Omitted by `guardInput` callers that
+   * do not distinguish; the engine fills it when it knows (§4.10). */
+  source?: OverflowSource;
 }
 
 /** The overflow refusal message — one source of truth. */
@@ -54,14 +62,24 @@ export function guardInput(opts: {
 
 /**
  * A conservative estimate of a request's input tokens from the assembled text:
- * the system message plus every message's text, at the §4.8 rate plus the fixed
- * margin. Used by the middleware, where the request is already assembled.
+ * the system message plus every message's text, at `ratio` chars/token (§4.8)
+ * plus the margin. `ratio` defaults to `CHARS_PER_TOKEN` (4); a measured
+ * `usageRatio` refines it. Used by the middleware, where the request is already
+ * assembled.
  */
 export function estimateRequestTokens(
   parts: { systemText: string; messagesText: string },
   marginTokens: number = ESTIMATE_MARGIN_TOKENS,
+  ratio: number = CHARS_PER_TOKEN,
 ): number {
-  return estimateTokens(parts.systemText) + estimateTokens(parts.messagesText) + marginTokens;
+  const chars = parts.systemText.length + parts.messagesText.length;
+  return Math.ceil(chars / clampRatio(ratio)) + marginTokens;
+}
+
+/** The exact character count of the assembled request (§4.8) — the numerator of
+ * the measured chars/token ratio. */
+export function requestChars(parts: { systemText: string; messagesText: string }): number {
+  return parts.systemText.length + parts.messagesText.length;
 }
 
 /**

@@ -281,4 +281,50 @@ describe("ContextPipeline (§4)", () => {
     expect(frame.headTokens).toBe(1600);
     expect(p.activeChainTokens(frame)).toBe(frame.activeChainTokens);
   });
+
+  it("records and resolves the measured chars/token ratio per model (§4.8)", () => {
+    const s = session();
+    const p = pipeline(s, bus);
+    // before any measurement: the default 4, not a measured ratio
+    expect(p.effectiveRatio("m")).toEqual({ ratio: 4, hasMeasured: false });
+    // 1000 chars / 500 input_tokens = 2.0, tagged to model "m"
+    p.recordUsageRatio(1000, 500, "m");
+    expect(p.effectiveRatio("m")).toEqual({ ratio: 2, hasMeasured: true });
+    expect(s.metadata.usageRatio).toBe(2);
+    expect(s.metadata.usageRatioModel).toBe("m");
+    // a model switch drops it: the ratio is per selected model
+    expect(p.effectiveRatio("other")).toEqual({ ratio: 4, hasMeasured: false });
+  });
+
+  it("dropUsageRatio clears the ratio (anchor rebase / fold) (§4.8)", () => {
+    const s = session();
+    const p = pipeline(s, bus);
+    p.recordUsageRatio(1000, 250, "m");
+    expect(p.effectiveRatio("m").hasMeasured).toBe(true);
+    p.dropUsageRatio();
+    expect(p.effectiveRatio("m")).toEqual({ ratio: 4, hasMeasured: false });
+    expect(s.metadata.usageRatio).toBeUndefined();
+  });
+
+  it("a compaction fold drops the measured ratio with the usage anchor (FX-C, §4.8)", async () => {
+    const s = session();
+    s.usageAnchor = 9000;
+    const p = pipeline(s, bus, {
+      percents: tightPercents,
+      summarize: async () => "folded summary",
+    });
+    p.recordUsageRatio(4000, 1000, "m");
+    expect(p.effectiveRatio("m").hasMeasured).toBe(true);
+    // Drive a fold: a long assistant history beyond the (tiny) active chain.
+    const msgs: BaseMessage[] = [];
+    for (let i = 0; i < 6; i++) {
+      msgs.push(new HumanMessage(`u${i} ${"x".repeat(200)}`));
+      msgs.push(new AIMessage(`a${i} ${"y".repeat(200)}`));
+    }
+    const res = await p.compact(msgs, { force: true });
+    expect(res.turnsFolded).toBeGreaterThan(0);
+    // the anchor AND the ratio are dropped together
+    expect(s.usageAnchor).toBeUndefined();
+    expect(p.effectiveRatio("m")).toEqual({ ratio: 4, hasMeasured: false });
+  });
 });

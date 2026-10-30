@@ -44,7 +44,7 @@ import { LocalShellBackend } from "deepagents";
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { Guardian } from "../entities/guardian.js";
 import { Warden } from "../entities/warden.js";
-import type { ToolRegistry } from "../entities/tool-registry.js";
+import type { ToolRegistry, ToolDefinition } from "../entities/tool-registry.js";
 import { buildCoreTools, buildMcpModelTools, buildPluginModelTools } from "../tools/builtin.js";
 import { buildWebTools } from "../tools/web-tools.js";
 import { buildResearchNotesTool } from "../tools/research-notes.js";
@@ -81,7 +81,7 @@ import { ContextPipeline } from "./context-pipeline.js";
 import type { ContextSnapshot, EnvironmentFacts } from "../entities/context/snapshot.js";
 import { emptySnapshot } from "../entities/context/snapshot.js";
 import { BUILTIN_PROMPTS } from "../entities/prompts/prompt-registry.js";
-import { preflightEstimate, effectiveOutputReservation, type SizingPercents } from "../entities/context/budget.js";
+import { preflightEstimate, effectiveOutputReservation, computeBudget, headWarnTokens, ESTIMATE_MARGIN_TOKENS, type SizingPercents } from "../entities/context/budget.js";
 import { InlineReasoningSplitter, splitInlineReasoning, hasInlineReasoning } from "../entities/context/reasoning-split.js";
 import {
   overflowGuardSpec,
@@ -90,6 +90,7 @@ import {
   contextOverflowOf,
   ContextOverflowError,
   type ContextOverflow,
+  type OverflowSource,
 } from "../entities/context/model-guard.js";
 import { estimateTokens } from "../entities/context/budget.js";
 import { CoreErrorException, coreError, ErrorCode, type Result } from "../entities/errors.js";
@@ -164,6 +165,11 @@ export interface TurnResult {
 export interface EngineDeps {
   chatModel: BaseChatModel;
   modelName: string;
+  /** §4.8, §11.7 — the OPTIONAL exact input-token count for the selected
+   * endpoint (Anthropic `count_tokens`, OpenAI-compatible `/tokenize`). The
+   * pipeline calls it only near a decision threshold; absent/unset falls back to
+   * the measured-ratio estimate. Returns null when the endpoint cannot count. */
+  countTokens?: (messages: BaseMessage[], tools: ToolDefinition[]) => Promise<number | null>;
   /** §10.7 — the clock used to measure per-model-call generation time (`genMs`,
    * first-to-last streamed token). Defaults to `Date.now`; a test injects a
    * scripted clock so the measured deltas are deterministic. */
@@ -411,8 +417,14 @@ function chunkText(content: unknown): string {
   return "";
 }
 
+/** §4.8 — the character count of a message's text content, the numerator of the
+ * measured chars/token ratio. Reuses `chunkText` so a content-block message is
+ * counted by its visible text only (reasoning/images excluded). */
+function messageChars(m: BaseMessage): number {
+  return chunkText(m.content).length;
+}
+
 /**
- * Pull the reasoning delta out of a streamed message chunk (§3.7, §4.7): the
  * provider's reasoning field surfaces either as `additional_kwargs.reasoning_content`
  * (vLLM/Qwen OpenAI-compatible) or as `reasoning`/`thinking` content blocks
  * (Anthropic-style). Reasoning never counts as text and never persists.
@@ -1568,14 +1580,26 @@ export class Engine {
         ) as unknown as BaseMessage[];
         const frame = pipeline.budgetFrame(head.headTokens);
         const estimate = pipeline.estimatedUsed(vis);
+        // §4.8 — capture the exact request's character count (the assembled
+        // system message + every visible message) as the numerator of the
+        // measured chars/token ratio. `absorbUsage` divides it by the provider's
+        // real `input_tokens` once the response reports usage.
+        this.turnRequestChars = messageChars(message) + vis.reduce((n, m) => n + messageChars(m), 0);
         // §10.7 — remember this turn's harness input estimate so MODEL_USAGE can
         // carry the estimate beside the provider-reported figure (or in its
         // place when the endpoint reports no usage), feeding the stats view.
         this.turnEstimatedInput = estimate;
         const providerMax = this.turnMaxInputTokens;
+        // §4.8 — when the pre-flight hard stop took an exact endpoint count near
+        // a threshold, it stands in for the raw estimate here too, so the
+        // compaction/safety-net crossing rests on the same exact count. It is
+        // still the LOWEST-priority term (provider → anchor → exact/estimate):
+        // an exact input-token count is the right stand-in for the estimate, not
+        // an override of a real provider/anchor usage figure.
+        const occupancyEstimate = this.turnExactInput ?? estimate;
         const used = pipeline.resolveUsed({
           ...(providerMax > 0 ? { providerMaxInput: providerMax } : {}),
-          estimate,
+          estimate: occupancyEstimate,
         });
         pipeline.report(frame, used);
         // §4.2.1 — the head-size warning: when the fixed context (head + bound
@@ -1602,6 +1626,25 @@ export class Engine {
 
   /** The max provider-reported input_tokens seen this turn (§4.8). */
   private turnMaxInputTokens = 0;
+
+  /** §4.8 — the exact endpoint token count obtained by the pre-flight hard stop
+   * when the estimate lay within the margin of a decision threshold (null when
+   * no count was taken). The context middleware uses it in place of the raw
+   * estimate for THIS turn's compaction/safety-net threshold crossing, so an
+   * exact count drives every near-threshold decision, not only the hard stop.
+   * Reset per turn. */
+  private turnExactInput: number | null = null;
+
+  /** The exact character count of the request last assembled this turn (§4.8) —
+   * the numerator of the measured chars/token ratio, captured in the context
+   * middleware where the request is already built. */
+  private turnRequestChars = 0;
+
+  /** §4.8 — once the selected endpoint's `countTokens` probe fails (404/405, an
+   * unsupported shape, a timeout, or a network error) it is marked unsupported
+   * for the rest of this engine's life (one endpoint per engine) and never
+   * called again; the pipeline falls back to the ratio estimate. */
+  private countTokensUnsupported = false;
 
   /** §7.2 — the session whose run-cache subtree pass-by-reference blobs are
    * stored under, set at the start of each `runTurn` so the `task` tool's brief
@@ -1646,11 +1689,13 @@ export class Engine {
     return createMiddleware(spec as Parameters<typeof createMiddleware>[0]);
   }
 
-  /** Emit `CONTEXT_OVERFLOW` + the overflow threshold crossing (§4.10). */
+  /** Emit `CONTEXT_OVERFLOW` + the overflow threshold crossing (§4.10). The
+   * `source` (§4.8) names which count drove the refusal; it defaults to
+   * `default` (the 4 chars/token estimate) when a caller does not distinguish. */
   private emitOverflow(session: Session, o: ContextOverflow): void {
     this.deps.bus.emit(
       "CONTEXT_OVERFLOW",
-      { estimatedInput: o.estimatedInput, maxOutputTokens: o.maxOutputTokens, limit: o.limit, message: o.message },
+      { estimatedInput: o.estimatedInput, maxOutputTokens: o.maxOutputTokens, limit: o.limit, source: o.source ?? "default", message: o.message },
       { session: session.id },
     );
     this.deps.bus.emit("CONTEXT_THRESHOLD_CROSSED", { level: "overflow", percentage: 100 }, { session: session.id });
@@ -1794,29 +1839,145 @@ export class Engine {
    * `guardInput` decision and `emitOverflow` emitter the middleware uses (one
    * source of truth, §15.1#4). The middleware is the universal backstop every
    * model call still passes through. Returns true when the turn must be refused.
+   *
+   * §4.8 — the estimate is `ceil(chars / ratio)` + margin at the session's
+   * MEASURED chars/token ratio for this model (default 4 before any
+   * measurement). When the estimate lies within `estimateMarginTokens` of a
+   * decision threshold (compaction, safety net, the hard stop, or the head
+   * warning) the guard first asks the SELECTED endpoint for an exact count
+   * through the optional `countTokens` capability and uses it for this decision.
+   * `source` records which count drove a refusal (`endpoint` | `ratio` |
+   * `default`). The first probe failure marks the endpoint unsupported for the
+   * session (one `WARNING_EMITTED`), never retried and never sent elsewhere.
    */
-  private overflowGuard(session: Session, input: string, pipeline: ContextPipeline): boolean {
+  private async overflowGuard(session: Session, input: string, pipeline: ContextPipeline): Promise<boolean> {
     const snapshot = this.buildSnapshot(session);
-    const { message } = pipeline.buildSystemMessage(snapshot);
+    const { message, head } = pipeline.buildSystemMessage(snapshot);
     const systemText = (message.content as { text: string }[]).map((b) => b.text).join("\n");
+    const { ratio, hasMeasured } = pipeline.effectiveRatio(this.deps.modelId);
     const estimate = preflightEstimate({
       systemText,
       toolSchemaText: this.toolSchemaText(),
       chainText: "",
       newMessage: input,
-    }, this.estimateMargin());
-    const overflow = guardInput({
-      estimatedInput: estimate,
-      limit: this.deps.window,
-      // FX-C — default the output reservation sanely when unset so the pre-send
-      // hard stop engages even for a model entry that omits `maxOutputTokens`.
-      maxOutputTokens: this.outputReservation(),
-    });
+    }, this.estimateMargin(), ratio);
+    // FX-C — default the output reservation sanely when unset so the pre-send
+    // hard stop engages even for a model entry that omits `maxOutputTokens`.
+    const maxOutputTokens = this.outputReservation();
+
+    // §4.8 — decide the count that drives this decision. Start from the estimate
+    // (ratio vs default), then ask the endpoint for an exact count ONLY when the
+    // estimate is within the margin of a decision threshold.
+    let estimatedInput = estimate;
+    let source: OverflowSource = hasMeasured ? "ratio" : "default";
+    if (this.nearDecisionThreshold(estimate, head.headTokens, maxOutputTokens)) {
+      const exact = await this.exactCount(session, message, input);
+      if (exact !== null) {
+        estimatedInput = exact + (this.estimateMargin() ?? ESTIMATE_MARGIN_TOKENS);
+        source = "endpoint";
+        // §4.8 — "uses that count in place of the estimate for that one
+        // decision" applies to EVERY threshold, not just the hard stop. The
+        // compaction/safety-net threshold crossing is driven by the context
+        // middleware's `pipeline.report(used)`, where `used` falls to the
+        // estimate when no provider/anchor count exists (a fresh session). Stash
+        // the exact count so that pre-turn report uses it in place of the raw
+        // estimate — the same count that drove the hard-stop decision here.
+        this.turnExactInput = exact;
+      }
+    }
+
+    const overflow = guardInput({ estimatedInput, limit: this.deps.window, maxOutputTokens });
     if (overflow) {
-      this.emitOverflow(session, overflow);
+      this.emitOverflow(session, { ...overflow, source });
       return true;
     }
     return false;
+  }
+
+  /**
+   * §4.8 — true when `estimate` lies within `estimateMarginTokens` of ANY
+   * decision threshold: compaction, safety net, the §4.10 hard stop, or the
+   * head warning. The band is DERIVED from the existing margin, so no new config
+   * key is added and most turns make no count call.
+   */
+  private nearDecisionThreshold(estimate: number, headTokens: number, maxOutputTokens: number): boolean {
+    const margin = this.estimateMargin() ?? ESTIMATE_MARGIN_TOKENS;
+    const frame = this.pipelineBudgetFrame(headTokens, maxOutputTokens);
+    const thresholds = [
+      frame.compactionTriggerTokens,
+      frame.safetyNetTriggerTokens,
+      this.deps.window - maxOutputTokens, // the §4.10 hard stop
+      frame.headWarnTokens,
+    ];
+    return thresholds.some((t) => t > 0 && Math.abs(estimate - t) <= margin);
+  }
+
+  /** The decision-threshold frame for the near-threshold band (§4.8). */
+  private pipelineBudgetFrame(headTokens: number, outputReservation: number): {
+    compactionTriggerTokens: number;
+    safetyNetTriggerTokens: number;
+    headWarnTokens: number;
+  } {
+    const percents = resolvePercents(this.deps.getConfig(), this.deps.endpointPercents);
+    const frame = computeBudget({ window: this.deps.window, headTokens, outputReservation, percents });
+    return {
+      compactionTriggerTokens: frame.compactionTriggerTokens,
+      safetyNetTriggerTokens: frame.safetyNetTriggerTokens,
+      headWarnTokens: headWarnTokens(this.deps.window, percents.headWarnPct),
+    };
+  }
+
+  /**
+   * §4.8, §11.7 — ask the SELECTED endpoint for an exact input-token count, once
+   * per endpoint-session as a probe. Returns the exact count, or null when the
+   * endpoint has no `countTokens`, is already marked unsupported, or the call
+   * fails (404/405, an unsupported shape, a timeout, a network error, or a
+   * refused redirect). The first failure marks the endpoint unsupported for the
+   * session (one `WARNING_EMITTED`), never retried and never sent elsewhere
+   * (§11.5, invariant 26).
+   */
+  private async exactCount(
+    session: Session,
+    systemMessage: BaseMessage,
+    input: string,
+  ): Promise<number | null> {
+    if (!this.deps.countTokens || this.countTokensUnsupported) return null;
+    const messages: BaseMessage[] = [systemMessage, new HumanMessage(input)];
+    // §4.8 — the real request binds the tool schemas and the pre-flight estimate
+    // counts `toolSchemaText()` (the full registry), so the exact count must
+    // include the SAME tool definitions or it undercounts and could let an
+    // over-limit request slip past the §4.10 hard stop.
+    const tools = this.deps.registry.list();
+    try {
+      const n = await this.deps.countTokens(messages, tools);
+      if (n === null) {
+        this.markCountUnsupported(session);
+        return null;
+      }
+      return n;
+    } catch (e) {
+      this.markCountUnsupported(session, e);
+      return null;
+    }
+  }
+
+  /** Mark the endpoint's `countTokens` unsupported for the session (§4.8): one
+   * `WARNING_EMITTED`, then never called again. */
+  private markCountUnsupported(session: Session, err?: unknown): void {
+    if (this.countTokensUnsupported) return;
+    this.countTokensUnsupported = true;
+    this.deps.bus.emit(
+      "WARNING_EMITTED",
+      {
+        category: "context",
+        source: "count-tokens",
+        // §14.6 — every WARNING_EMITTED carries a one-sentence human `message`
+        // (no secrets). The provider error, if any, stays in `pattern` (masked).
+        message: "The selected endpoint does not support exact token counting; using the estimate.",
+        pattern: err ? maskText(String(err)).slice(0, 200) : "endpoint does not support exact token counting",
+      },
+      { session: session.id },
+    );
   }
   /** §8.4 — a one-time, bounded wait for the non-blocking MCP autoConnect to
    * settle so an approved tool is registered before the agent binds its tools.
@@ -2100,8 +2261,9 @@ export class Engine {
     this.activeSessionId = session.id;
     const pipeline = this.pipeline(session);
     this.turnMaxInputTokens = 0;
+    this.turnExactInput = null;
     // §4.10 pre-flight hard stop — refuse before building the agent/sending.
-    if (this.overflowGuard(session, input, pipeline)) {
+    if (await this.overflowGuard(session, input, pipeline)) {
       return {
         status: "failed",
         text: "",
@@ -2474,10 +2636,19 @@ export class Engine {
 
   /** Absorb provider usage_metadata — the max input_tokens anchors the budget (§4.8). */
   private absorbUsage(session: Session, messages: BaseMessage[], pipeline: ContextPipeline): void {
+    let latestInput = 0;
     for (const m of messages) {
       const usage = (m as { usage_metadata?: { input_tokens?: number } }).usage_metadata;
       const input = usage?.input_tokens ?? 0;
       if (input > this.turnMaxInputTokens) this.turnMaxInputTokens = input;
+      if (input > 0) latestInput = input;
+    }
+    // §4.8 — rebase the measured chars/token ratio from the EXACT request's
+    // characters (captured pre-call) divided by the provider-reported
+    // `input_tokens` of the latest response that reported usage, tagged with the
+    // active model so a switch drops it. Clamp lives in the entity.
+    if (latestInput > 0 && this.turnRequestChars > 0) {
+      pipeline.recordUsageRatio(this.turnRequestChars, latestInput, this.deps.modelId);
     }
     if (this.turnMaxInputTokens > 0) {
       // Persist the usage anchor in session state (§4.8, §5.1).

@@ -404,4 +404,46 @@ describe("§10.12 LOW — resume and untrusted-timeline handling", () => {
     expect(warnings.length).toBe(1);
     await api2.session.shutdown().catch(() => undefined);
   });
+
+  it("a traversal drops the measured usageRatio consistently with the usage anchor (§4.8)", async () => {
+    ws = hermeticTmp("rb-ratio");
+    await fs.mkdir(path.join(ws, ".voidrift"), { recursive: true });
+    const checkpointer = createMemoryCheckpointer();
+    const sessions = new InMemorySessionRepository();
+    // A model that reports usage so the engine MEASURES a chars/token ratio.
+    const withUsage = (text: string) => {
+      const msg = new AIMessage(text);
+      (msg as { usage_metadata?: unknown }).usage_metadata = { input_tokens: 40, output_tokens: 3, total_tokens: 43 };
+      return msg;
+    };
+    const model = fakeModel()
+      .respond(withUsage("one"))
+      .respond(withUsage("two")) as unknown as FakeBuiltModel;
+    const { api } = await createCore({
+      workspaceRoot: ws,
+      configStore: new InMemoryConfigStore(seed()),
+      sessionRepository: sessions,
+      checkpointer,
+      chatModelFactory: (_r: ResolvedModel, _e: ModelConfigEntry) => model as unknown as import("@langchain/core/language_models/chat_models").BaseChatModel,
+      startAgent: "chat",
+    });
+    const c = await api.session.create();
+    const id = c.ok && c.value ? c.value.id : "";
+    await api.session.send(id, { input: "turn one", approvalMode: "policy_only" });
+    await api.session.send(id, { input: "turn two", approvalMode: "policy_only" });
+    // The ratio was measured and persisted to session metadata.
+    const metas1 = await sessions.list();
+    const meta1 = metas1.find((m) => m.id === id)!;
+    expect(meta1.usageRatio).toBeGreaterThan(0);
+    expect(meta1.usageRatioModel).toBe("t");
+    // goto(0) → session start: the anchor is restored (to none) and the ratio is
+    // dropped with it; the persisted metadata reflects the drop.
+    const g0 = await api.session.goto(id, 0);
+    expect(g0.ok && g0.value.ok).toBe(true);
+    const metas2 = await sessions.list();
+    const meta2 = metas2.find((m) => m.id === id)!;
+    expect(meta2.usageRatio).toBeUndefined();
+    expect(meta2.usageRatioModel).toBeUndefined();
+    await api.session.shutdown().catch(() => undefined);
+  });
 });

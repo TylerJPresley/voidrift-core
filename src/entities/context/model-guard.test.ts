@@ -10,6 +10,7 @@ import {
   guardInput,
   estimateRequestTokens,
   requestText,
+  requestChars,
   overflowGuardSpec,
   ContextOverflowError,
   contextOverflowOf,
@@ -57,6 +58,16 @@ describe("requestText / estimateRequestTokens", () => {
     const { systemText, messagesText } = requestText({});
     expect(systemText).toBe("");
     expect(messagesText).toBe("");
+  });
+
+  it("threads a measured ratio and exposes the raw request chars (§4.8)", () => {
+    const parts = { systemText: "a".repeat(800), messagesText: "" };
+    // default 4 → 200, no margin
+    expect(estimateRequestTokens(parts, 0)).toBe(200);
+    // denser ratio 2 → 400
+    expect(estimateRequestTokens(parts, 0, 2)).toBe(400);
+    // requestChars is the numerator of the measured ratio
+    expect(requestChars(parts)).toBe(800);
   });
 
   it("yields empty text for object-without-content, null, and number values", () => {

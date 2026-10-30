@@ -25,6 +25,8 @@ import {
   estimateTokens,
   resolveUsedTokens,
   summaryBudgetTokens,
+  measureRatio,
+  CHARS_PER_TOKEN,
   type SizingPercents,
   type BudgetFrame,
 } from "../entities/context/budget.js";
@@ -281,6 +283,46 @@ export class ContextPipeline {
   }
 
   /**
+   * The effective measured chars/token ratio for the CURRENT model (§4.8). The
+   * ratio is per session AND per selected model: a ratio measured against a
+   * different model is treated as absent (dropped on a model switch). Returns
+   * the default `CHARS_PER_TOKEN` (4) before any measurement — so the caller can
+   * tell whether the estimate rests on the measured ratio or the default, which
+   * `CONTEXT_OVERFLOW.source` records. `hasMeasured` distinguishes the two.
+   */
+  effectiveRatio(modelId: string): { ratio: number; hasMeasured: boolean } {
+    const r = this.session.usageRatio;
+    if (r !== undefined && r > 0 && this.session.usageRatioModel === modelId) {
+      return { ratio: r, hasMeasured: true };
+    }
+    return { ratio: CHARS_PER_TOKEN, hasMeasured: false };
+  }
+
+  /**
+   * Record a freshly measured chars/token ratio (§4.8) from the exact request's
+   * characters and the provider-reported `input_tokens`, tagged with the model
+   * it was measured against. A non-positive `inputTokens` leaves the ratio
+   * unchanged. Mirrors into session metadata so a resume reloads it.
+   */
+  recordUsageRatio(requestChars: number, inputTokens: number, modelId: string): void {
+    const ratio = measureRatio(requestChars, inputTokens);
+    if (ratio === undefined) return;
+    this.session.usageRatio = ratio;
+    this.session.usageRatioModel = modelId;
+    this.session.metadata.usageRatio = ratio;
+    this.session.metadata.usageRatioModel = modelId;
+  }
+
+  /** Drop the measured ratio (§4.8) — at an anchor rebase (fold) and a model
+   * switch; the next provider count re-measures. */
+  dropUsageRatio(): void {
+    delete this.session.usageRatio;
+    delete this.session.usageRatioModel;
+    delete this.session.metadata.usageRatio;
+    delete this.session.metadata.usageRatioModel;
+  }
+
+  /**
    * The §4.8 last-resort ESTIMATE of what fills the WORKING budget when no
    * provider/anchor count is available (FX-G): the derived conversation tokens
    * PLUS the bound tool-schema tokens. The head is excluded — it has its own cap
@@ -385,6 +427,10 @@ export class ContextPipeline {
       // (the old anchor + deltas would otherwise keep the pre-fold size and the
       // meter would not fall after a fold). The next real provider count re-anchors.
       delete this.session.usageAnchor;
+      // §4.8 — the measured ratio is dropped at an anchor rebase too, consistently
+      // with the anchor (the fold shrinks the request, so a ratio measured against
+      // the pre-fold chars no longer describes it); the next provider count re-measures.
+      this.dropUsageRatio();
       // A folded turn's documents are marked stale so they re-read (§4.5, §4.9).
       this.registry.markFoldedStale(plan.foldedThroughTurn);
       this.deps.bus.emit(
@@ -399,6 +445,7 @@ export class ContextPipeline {
     // region beyond the active chain existed: still a successful compaction.
     if (clearedCount > 0) {
       delete this.session.usageAnchor; // FX-C — rebase the estimate (see above)
+      this.dropUsageRatio(); // §4.8 — drop the measured ratio with the anchor
       this.registry.markFoldedStale(plan.foldedThroughTurn);
       this.deps.bus.emit(
         "CONTEXT_COMPACTED",

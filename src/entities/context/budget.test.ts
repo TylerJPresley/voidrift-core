@@ -11,6 +11,10 @@ import {
   resolveUsedTokens,
   summaryBudgetTokens,
   estimateTokens,
+  clampRatio,
+  measureRatio,
+  RATIO_MIN,
+  RATIO_MAX,
 } from "./budget.js";
 
 describe("budget math (§4.8)", () => {
@@ -64,5 +68,38 @@ describe("budget math (§4.8)", () => {
     expect(summaryBudgetTokens(1_000_000, 100_000)).toBe(5000);
     // 20% of folded between floor and ceiling
     expect(summaryBudgetTokens(20_000, 400_000)).toBe(4000);
+  });
+});
+
+describe("measured chars/token ratio (§4.8)", () => {
+  it("clamps to the internal [1.5, 8] band; a non-positive value falls back to 4", () => {
+    expect(clampRatio(4)).toBe(4);
+    expect(clampRatio(1)).toBe(RATIO_MIN);
+    expect(clampRatio(20)).toBe(RATIO_MAX);
+    expect(clampRatio(0)).toBe(4);
+    expect(clampRatio(-3)).toBe(4);
+    expect(clampRatio(Number.NaN)).toBe(4);
+  });
+
+  it("measures request chars / input_tokens, clamped; absent when no usage reported", () => {
+    // 1000 chars / 250 tokens = 4.0
+    expect(measureRatio(1000, 250)).toBe(4);
+    // a near-zero input_tokens would blow up → clamped to the ceiling
+    expect(measureRatio(1000, 10)).toBe(RATIO_MAX);
+    // a huge input_tokens (cache discount) → clamped to the floor
+    expect(measureRatio(1000, 5000)).toBe(RATIO_MIN);
+    // no usage reported leaves the ratio unchanged (undefined)
+    expect(measureRatio(1000, 0)).toBeUndefined();
+    expect(measureRatio(0, 250)).toBeUndefined();
+  });
+
+  it("a measured ratio changes the next estimate vs the default 4", () => {
+    const parts = { systemText: "a".repeat(800), toolSchemaText: "", chainText: "", newMessage: "" };
+    // default 4 → 800/4 = 200 (+0 margin)
+    expect(preflightEstimate(parts, 0)).toBe(200);
+    // a measured ratio of 2 → 800/2 = 400: a denser model reads MORE tokens
+    expect(preflightEstimate(parts, 0, 2)).toBe(400);
+    // estimateTokens threads the ratio too
+    expect(estimateTokens("a".repeat(8), 2)).toBe(4);
   });
 });

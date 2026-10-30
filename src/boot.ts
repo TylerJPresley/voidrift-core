@@ -1287,6 +1287,11 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
       modelId: resolved.model,
       protocol: resolved.protocol,
       vision: resolved.vision,
+      // §4.8, §11.7 — the active endpoint's OPTIONAL exact token-count capability
+      // (Anthropic count_tokens, OpenAI-compatible /tokenize; unset elsewhere).
+      // The engine (per-endpoint) is rebuilt on a model switch, so this is always
+      // the selected endpoint's own capability — never a failover (invariant 26).
+      ...(model.countTokensFn() ? { countTokens: model.countTokensFn()! } : {}),
       resolveModelEntryFile: (name) => {
         const p = config.modelEntryFile(name);
         return p ? tildeHome(p, os.homedir()) : undefined;

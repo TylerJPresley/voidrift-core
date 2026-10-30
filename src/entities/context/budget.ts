@@ -63,27 +63,59 @@ export function effectiveOutputReservation(
 }
 
 /** A conservative character-based token estimate (§4.8, last resort). */
-export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / CHARS_PER_TOKEN);
+export function estimateTokens(text: string, ratio: number = CHARS_PER_TOKEN): number {
+  return Math.ceil(text.length / ratio);
+}
+
+/**
+ * The measured characters-per-token ratio bounds (§4.8). The ratio is a
+ * MEASURED `request chars / provider input_tokens`, kept in session metadata
+ * beside the usage anchor (`usageRatio`), per session and per selected model. It
+ * is clamped to `[RATIO_MIN, RATIO_MAX]` so one anomalous response (a huge
+ * cached-prompt discount, or a near-zero `input_tokens`) cannot skew the next
+ * estimate to a useless value. Before any measurement the ratio is
+ * `CHARS_PER_TOKEN` (4). These are internal constants, not config keys (§4.8,
+ * limits-vs-spec guard).
+ */
+export const RATIO_MIN = 1.5;
+export const RATIO_MAX = 8;
+
+/** Clamp a chars/token ratio to the internal `[1.5, 8]` band (§4.8). */
+export function clampRatio(ratio: number): number {
+  if (!Number.isFinite(ratio) || ratio <= 0) return CHARS_PER_TOKEN;
+  return Math.min(RATIO_MAX, Math.max(RATIO_MIN, ratio));
+}
+
+/**
+ * Measure a fresh chars/token ratio from the exact request's characters and the
+ * provider-reported `input_tokens` of the latest response that reported usage
+ * (§4.8), clamped to `[1.5, 8]`. A non-positive `inputTokens` (no usage
+ * reported) leaves the prior ratio unchanged. PURE.
+ */
+export function measureRatio(requestChars: number, inputTokens: number): number | undefined {
+  if (!inputTokens || inputTokens <= 0 || requestChars <= 0) return undefined;
+  return clampRatio(requestChars / inputTokens);
 }
 
 /**
  * The pre-flight estimate: the assembled system prompt + bound tool schemas +
- * prior persisted chain + the new message, counted at 4 chars/token, plus a
- * fixed 2000-token margin (§4.8).
+ * prior persisted chain + the new message, counted at `ratio` chars/token
+ * (§4.8), plus the estimate margin. `ratio` defaults to `CHARS_PER_TOKEN` (4);
+ * when a measured `usageRatio` is threaded it refines the estimate
+ * `ceil(chars / ratio)`.
  */
 export function preflightEstimate(parts: {
   systemText: string;
   toolSchemaText: string;
   chainText: string;
   newMessage: string;
-}, marginTokens: number = ESTIMATE_MARGIN_TOKENS): number {
-  const total =
-    estimateTokens(parts.systemText) +
-    estimateTokens(parts.toolSchemaText) +
-    estimateTokens(parts.chainText) +
-    estimateTokens(parts.newMessage);
-  return total + marginTokens;
+}, marginTokens: number = ESTIMATE_MARGIN_TOKENS, ratio: number = CHARS_PER_TOKEN): number {
+  const chars =
+    parts.systemText.length +
+    parts.toolSchemaText.length +
+    parts.chainText.length +
+    parts.newMessage.length;
+  return Math.ceil(chars / clampRatio(ratio)) + marginTokens;
 }
 
 /**

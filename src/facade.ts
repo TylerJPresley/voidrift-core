@@ -501,6 +501,14 @@ export class CoreAPI {
     else delete session.metadata.rollingSummary;
     if (context?.usageAnchor !== undefined) session.usageAnchor = context.usageAnchor;
     else delete session.usageAnchor;
+    // §4.8 — the measured chars/token ratio is NOT part of the move context; a
+    // traversal drops it (consistently with the anchor rebase) so the next
+    // provider count re-measures it against the restored request. A stale ratio
+    // from an undone turn would describe a request that no longer exists.
+    delete session.usageRatio;
+    delete session.usageRatioModel;
+    delete session.metadata.usageRatio;
+    delete session.metadata.usageRatioModel;
     // RESET — conversation-derived caches that must not trust an undone turn.
     session.readPaths = new Set<string>();
     session.stalePaths = new Set<string>();

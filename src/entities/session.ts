@@ -64,6 +64,15 @@ export interface SessionMetadata {
   namePinned: boolean;
   /** The rolling-summary state (§4.9, §5.1); absent until the first fold. */
   rollingSummary?: RollingSummaryState;
+  /** The measured characters-per-token ratio (§4.8), beside the usage anchor:
+   * request chars / provider `input_tokens`, clamped `[1.5, 8]`, per session and
+   * per selected model. Absent before any measurement (the estimate uses 4).
+   * Dropped on a model switch and wherever the usage anchor is rebased. */
+  usageRatio?: number;
+  /** The model id the `usageRatio` was measured against (§4.8). The ratio is
+   * per selected model; when the active model differs from this, the ratio is
+   * treated as absent (dropped on a model switch). */
+  usageRatioModel?: string;
 }
 
 /** The trust level of a registry entry (§4.5). */
@@ -133,6 +142,12 @@ export class Session {
   rollingSummary?: RollingSummaryState;
   /** The persisted usage anchor — max input_tokens seen (§4.8). */
   usageAnchor?: number;
+  /** The measured chars/token ratio (§4.8), beside the usage anchor; absent
+   * before any measurement and dropped on a model switch (tracked by
+   * `usageRatioModel`) and an anchor rebase (fold). */
+  usageRatio?: number;
+  /** The model id `usageRatio` was measured against (§4.8). */
+  usageRatioModel?: string;
   /** The current turn number, incremented at each user turn (§4.9). */
   turn = 0;
   /** Per-turn snapshots mirrored to `turns.json` (§5.1); each turn's conversation

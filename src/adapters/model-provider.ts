@@ -19,6 +19,7 @@ import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import type { ModelInfo, ModelPort, ResolvedModel } from "../entities/ports/model-port.js";
 import type { Config, ModelConfigEntry } from "../config/schema.js";
 import { CoreErrorException, coreError, ErrorCode } from "../entities/errors.js";
+import { bundledCountTokens, type CountTokensFn } from "./count-tokens.js";
 
 /** A factory that builds a chat model from a resolved entry — the provider seam (§11.7). */
 export type ChatModelFactory = (resolved: ResolvedModel, entry: ModelConfigEntry) => BaseChatModel;
@@ -31,8 +32,24 @@ export interface NetworkSettings {
   maxRetries: number;
 }
 
-/** A plugin provider factory (§11.7): a protocol value → a bound LangChain client. */
-export type ProviderFactory = (entry: ModelConfigEntry) => BaseChatModel;
+/**
+ * A plugin provider factory (§11.7): a protocol value → a bound LangChain
+ * client. Either a bare `build` function (the original form) or an object
+ * `{ build, countTokens? }` carrying the OPTIONAL exact input-token count for
+ * the context pipeline's near-threshold check (§4.8). A function form has no
+ * `countTokens` — the pipeline falls back to the measured-ratio estimate.
+ */
+export type ProviderFactory =
+  | ((entry: ModelConfigEntry) => BaseChatModel)
+  | {
+      build(entry: ModelConfigEntry): BaseChatModel;
+      countTokens?(entry: ModelConfigEntry, messages: import("@langchain/core/messages").BaseMessage[], tools: import("../entities/tool-registry.js").ToolDefinition[]): Promise<number | null>;
+    };
+
+/** Normalize a `ProviderFactory` to its build function (§11.7). */
+function buildFn(f: ProviderFactory): (entry: ModelConfigEntry) => BaseChatModel {
+  return typeof f === "function" ? f : (entry) => f.build(entry);
+}
 
 /** The bundled protocol names a plugin cannot shadow (§11.7). Bundled wins. */
 export const BUNDLED_PROTOCOLS: ReadonlySet<string> = new Set(["openai", "anthropic", "google"]);
@@ -75,6 +92,26 @@ export class ModelProviderAdapter implements ModelPort {
     // Drop a cached client built from this provider so resolution re-resolves.
     this.cachedModel = null;
     this.cachedFor = null;
+  }
+
+  /**
+   * §4.8, §11.7 — the OPTIONAL exact input-token count capability for the ACTIVE
+   * endpoint, or `undefined` when the protocol offers none. A plugin provider in
+   * object form may expose its own `countTokens`; otherwise the bundled set
+   * wires it for Anthropic (`count_tokens`) and the OpenAI-compatible
+   * `/tokenize`, and leaves it unset elsewhere (Google, Bedrock). The capability
+   * reaches ONLY the active endpoint's own `baseUrl` with its own key.
+   */
+  countTokensFn(): CountTokensFn | undefined {
+    const resolved = this.resolve();
+    const entry = this.entry(resolved.name)!;
+    const provider = this.providers.get(resolved.protocol);
+    if (provider && typeof provider !== "function" && provider.countTokens) {
+      const ct = provider.countTokens.bind(provider);
+      return (messages, tools) => ct(entry, messages, tools);
+    }
+    if (provider) return undefined; // a plugin function-form provider has no count
+    return bundledCountTokens(entry);
   }
 
   private entry(name: string): ModelConfigEntry | undefined {
@@ -132,7 +169,7 @@ export class ModelProviderAdapter implements ModelPort {
     // The default factory receives the uniform network settings (§11.5); an
     // injected factory (tests, plugins) keeps the two-arg seam untouched.
     this.cachedModel = provider
-      ? provider(entry)
+      ? buildFn(provider)(entry)
       : this.factory === defaultChatModelFactory
         ? defaultChatModelFactory(resolved, entry, network)
         : this.factory(resolved, entry);
@@ -157,7 +194,7 @@ export class ModelProviderAdapter implements ModelPort {
       maxRetries: this.getConfig().networkModelMaxRetries,
     };
     return provider
-      ? provider(entry)
+      ? buildFn(provider)(entry)
       : this.factory === defaultChatModelFactory
         ? defaultChatModelFactory(resolved, entry, network)
         : this.factory(resolved, entry);
@@ -212,7 +249,7 @@ export class ModelProviderAdapter implements ModelPort {
       maxRetries: this.getConfig().networkModelMaxRetries,
     };
     return provider
-      ? provider(entry)
+      ? buildFn(provider)(entry)
       : this.factory === defaultChatModelFactory
         ? defaultChatModelFactory(resolved, entry, network)
         : this.factory(resolved, entry);
