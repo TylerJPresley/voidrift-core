@@ -46,6 +46,18 @@ re-ingest the same files.
 }
 ```
 
+## Briefing a worker
+
+A worker starts in fresh context. It sees its own role prompt, the harness rules, a short meta block (where it works, its tool-round budget), the skills index and the manual table of contents, and the task you send. It does not see this conversation, AGENTS.md, memory or the plan.
+
+Put what the worker needs in `task` and `context`: the facts it needs, the project rules that apply to its job (quote them), the success criteria, and one focused question. Split by question: one worker, one question.
+
+## Worker budget and the limit
+
+A worker has the same tool-round budget as you, stated in its meta block. At 80% of its rounds it gets a wrap-up note. A worker that runs out returns status `limit_reached` with what it found so far; the result is never empty.
+
+When a worker returns `limit_reached`, re-dispatch only the unanswered part: send a new task with the remaining question and the findings so far in `context`. Do not ask again what was already answered.
+
 ## What you get back
 
 A valid call returns the workers' summaries and final statuses, never a raw

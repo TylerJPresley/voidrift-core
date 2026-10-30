@@ -153,8 +153,14 @@ export function assembleHead(snapshot: ContextSnapshot): AssembledHead {
     inlineParts.push(`AGENTS.md (project instructions):\n${snapshot.projectInstructions}`);
     pushComponent(components, "AGENTS.md", snapshot.projectInstructions);
   }
-  inlineParts.push(`Status: ${snapshot.planStatus || "no active plan"}`);
-  if (snapshot.planStatus) pushComponent(components, "plan status", snapshot.planStatus);
+  // §4.2.1 — the plan status is an orchestrator head item; a worker head carries
+  // none (its `planStatus` is empty), so the "Status:" line and its component
+  // render only when a plan status is present. The orchestrator always sets
+  // `planStatus` ("no active plan" when idle), so its line is unchanged.
+  if (snapshot.planStatus) {
+    inlineParts.push(`Status: ${snapshot.planStatus}`);
+    pushComponent(components, "plan status", snapshot.planStatus);
+  }
   const inlineAgent = join(inlineParts);
   const inlineTokens = estimateTokens(inlineAgent);
 

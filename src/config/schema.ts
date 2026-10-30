@@ -545,10 +545,14 @@ export const ConfigSchema = z
     // never passed as 0 (§3.6).
     turnRecursionLimit: z.number().int().nonnegative().optional(),
     turnMaxConcurrency: z.number().int().positive().default(2),
-    // Per-worker super-step budget, bound as each dispatched worker's LangGraph
-    // recursionLimit (§7.2, §3.6). Distinct from the orchestrator's
+    // §7.2/§3.6 — an OPTIONAL explicit override of a worker's super-step budget
+    // (its LangGraph recursionLimit). UNSET (no default) it is DERIVED from
+    // `turnMaxToolRounds` with the same margin (2*rounds+5) as `turnRecursionLimit`,
+    // mirroring the orchestrator; set, it wins. Optional (no default) so the
+    // use-case can tell an explicit override from the derived ceiling, and the
+    // spec-limits guard reads it as "unset"/null. Distinct from the orchestrator's
     // turnRecursionLimit so budgets are set per tier, never assumed to inherit.
-    subagentRecursionLimit: z.number().int().positive().default(25),
+    subagentRecursionLimit: z.number().int().positive().optional(),
     // Age (minutes) past which a dead-owner worktree is pruned on boot (§7.2,
     // §7.3). Prefixed `vcs` because pruning runs in the VCS adapter.
     vcsWorktreeTtlMinutes: z.number().int().positive().default(120),

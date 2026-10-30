@@ -35,7 +35,13 @@ export type WorkerStatus =
   | "reviewed"
   | "merged"
   | "aborted"
-  | "skipped";
+  | "skipped"
+  // §3.3/§7.2 — the worker reached its tool-round budget (`turnMaxToolRounds`).
+  // Terminal and NEVER an empty failure: the result carries the worker's last
+  // assistant text, or a generated summary of the rounds used and the tools
+  // called. A consumer treats it as a completed worker, not an error (the CLI
+  // shows it as done, CLI §6.3).
+  | "limit_reached";
 
 /** A worker's structured return (§7.2). */
 export interface WorkerResult {

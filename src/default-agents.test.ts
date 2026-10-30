@@ -91,7 +91,16 @@ describe("seed agent templates shipped by the core package (§3.1)", () => {
 
   it("the researcher keeps web_fetch + web_search; the reviewer is read-only", () => {
     expect(load("researcher").tools).toEqual(expect.arrayContaining(["web_fetch", "web_search"]));
-    expect(load("reviewer").tools).toEqual(["read_file", "glob_files", "search_contents", "workspace_map"]);
+    // §7.1 — the reviewer gains the read-class skills/manual tools; still read-only.
+    expect(load("reviewer").tools).toEqual([
+      "read_file",
+      "glob_files",
+      "search_contents",
+      "workspace_map",
+      "read_manual",
+      "list_skills",
+      "load_skill",
+    ]);
   });
 
   it("the seeded top-level agents (research, vibe) list the three memory tools; workers do not (§6.2)", () => {

@@ -5,6 +5,7 @@
 import { describe, it, expect } from "vitest";
 import {
   deriveRecursionLimit,
+  workerRecursionLimit,
   roundBudgetNote,
   limitNotice,
   limitSummary,
@@ -15,6 +16,17 @@ describe("tool-round derivations (§3.6)", () => {
   it("derives the recursion ceiling as 2*rounds+5", () => {
     expect(deriveRecursionLimit(15)).toBe(35);
     expect(deriveRecursionLimit(10)).toBe(25);
+  });
+  it("workerRecursionLimit derives from turnMaxToolRounds when unset (§7.2, §3.6)", () => {
+    // Unset override → derived with the same margin as the orchestrator.
+    expect(workerRecursionLimit(15, undefined)).toBe(35);
+    expect(workerRecursionLimit(10, undefined)).toBe(25);
+  });
+  it("workerRecursionLimit uses the explicit override when set", () => {
+    expect(workerRecursionLimit(15, 50)).toBe(50);
+  });
+  it("workerRecursionLimit maps a non-positive derived ceiling to a large finite one", () => {
+    expect(workerRecursionLimit(0, undefined, 0, 0)).toBe(1_000_000);
   });
   it("limitNotice is the pinned CLI wording", () => {
     expect(limitNotice(15)).toBe("Step limit reached (15). Say continue to resume.");

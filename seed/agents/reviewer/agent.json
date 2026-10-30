@@ -6,6 +6,9 @@
     "read_file",
     "glob_files",
     "search_contents",
-    "workspace_map"
+    "workspace_map",
+    "read_manual",
+    "list_skills",
+    "load_skill"
   ]
 }

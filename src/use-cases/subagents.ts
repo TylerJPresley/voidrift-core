@@ -21,10 +21,19 @@
  * The use-case may depend on LangChain/LangGraph (§1 rule 4); no such type
  * crosses the facade — the facade reads the DTOs in `entities/subagents.ts`.
  */
-import { AIMessage, type BaseMessage } from "@langchain/core/messages";
+import { AIMessage, SystemMessage, type BaseMessage } from "@langchain/core/messages";
 import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons";
 import { createAgent, createMiddleware } from "langchain";
 import type { ResponseFormat } from "langchain";
+import { assembleHead, appendTurnMetadata } from "../entities/context/head.js";
+import { buildWorkerSnapshot } from "../entities/context/worker-head.js";
+import type { SkillManifestLine, ManualManifestLine } from "../entities/context/snapshot.js";
+import type { EnvironmentFacts } from "../entities/context/meta-block.js";
+import {
+  workerRecursionLimit,
+  limitSummary,
+  ToolRoundCounter,
+} from "../entities/tool-round.js";
 import {
   validateResponseSchema,
   selectStrategy,
@@ -209,6 +218,20 @@ export interface SubagentsDeps {
   /** The resolved endpoint window, for a worker's §8.3 result eviction. */
   window: number;
   /**
+   * §4.2.1 worker head — the sources the SHARED head assembly reads for a
+   * worker, so a worker's context is built by the SAME path as the orchestrator's
+   * from the worker's own agent definition. Each is optional: absent, that head
+   * source is simply empty (a pure in-memory test with no skills/manuals still
+   * gets the prompt + rules + meta block).
+   *   - `hardRules`: the `core.rules` digest (inline for every agent).
+   *   - `skillsIndex`/`manualsIndex`: the §12.1/§12.8 index manifests.
+   *   - `modelId`/`platform`/`shell`/`osRelease`: meta-block facts.
+   */
+  hardRules?: string;
+  skillsIndex?: () => SkillManifestLine[];
+  manualsIndex?: () => ManualManifestLine[];
+  modelId?: string;
+  /**
    * The resolved endpoint output reservation (§4.8), for the shared §4.10
    * overflow guard a worker's model call passes through. When both the window
    * and this are known (>0), a worker request that would overflow is refused
@@ -302,6 +325,21 @@ interface LiveWorker {
 
 /** The §8.2 shell tool a staged worker cannot hold (§7.4 no-shell limit, D5). */
 const SHELL_TOOL = "execute_command";
+
+/**
+ * §3.3/§7.2 — the per-invocation tool-round state for a dispatched worker. The
+ * round middleware records rounds against the shared `ToolRoundCounter`
+ * (budget = `turnMaxToolRounds`), accumulates the tool names called, and on
+ * reaching the ceiling sets `limitReached` with the model's last text so
+ * `invokeAgent` ends the worker on the terminal `limit_reached` status with a
+ * non-empty result (the last text, or a generated rounds-and-tools summary).
+ */
+interface WorkerRoundState {
+  counter: ToolRoundCounter;
+  tools: string[];
+  limitReached: boolean;
+  lastText: string;
+}
 
 /**
  * §13.11 — the task caps are registry keys read via the injected `LimitsPort`:
@@ -833,6 +871,7 @@ export class Subagents {
     stagingRun?: string,
     modelOverride?: BaseChatModel,
     responseFormat?: ResponseFormat,
+    roundState?: WorkerRoundState,
   ): ReturnType<typeof createAgent> {
     const backend = new LocalShellBackend({ rootDir });
     const cfg = this.deps.getConfig();
@@ -906,6 +945,28 @@ export class Subagents {
     // unknown key is caught at registration (MODEL_NOT_CONFIGURED); here it has
     // already been validated, so a miss falls back to the active endpoint.
     const model = modelOverride ?? this.resolveAgentModel(def) ?? this.deps.chatModel;
+    // §4.2.1 worker head — assemble the worker's leading SystemMessage from the
+    // SAME head path as the orchestrator (`assembleHead`/`appendTurnMetadata`)
+    // from the worker's own agent definition: its system prompt, `core.rules`,
+    // the worker-variant meta block, the skills index, and the manual TOC. It
+    // excludes AGENTS.md, memory, plan status, the worker list, and the
+    // orchestrator's conversation (§7.1). Passed as `createAgent`'s
+    // `systemPrompt`, so the worker's model call carries it as the one leading
+    // system message, provider-agnostic. A reviewer carries its own reviewer
+    // prompt the same way.
+    const systemPrompt = this.buildWorkerSystemMessage(def, rootDir, ctx, roundState);
+    // §3.3/§7.2 — a worker runs under its OWN tool-round budget
+    // (`turnMaxToolRounds`, the orchestrator's default). The round middleware
+    // drives the same 80% wrap-up note and the terminal `limit_reached` ending,
+    // reusing the shared tool-round entity (DRY). A reviewer gets no round state
+    // (its single verdict never hits the budget).
+    const middleware = [
+      this.overflowMiddleware(ctx.workerId),
+      ...(roundState ? [this.workerRoundMiddleware(roundState)] : []),
+      this.workerUsageMiddleware(def, ctx),
+      this.workerToolStatusMiddleware(ctx.workerId),
+      this.workerDecisionMiddleware(ctx, rootDir),
+    ];
     // §4.10 / invariant 9 — a worker's model call passes the SAME shared overflow
     // guard as the orchestrator's (its context is its own fresh context against
     // the same endpoint window): a request that would overflow is refused with
@@ -914,9 +975,124 @@ export class Subagents {
     return createAgent({
       model,
       tools,
-      middleware: [this.overflowMiddleware(ctx.workerId), this.workerUsageMiddleware(def, ctx), this.workerToolStatusMiddleware(ctx.workerId), this.workerDecisionMiddleware(ctx, rootDir)],
+      systemPrompt,
+      middleware,
       ...(responseFormat ? { responseFormat } : {}),
     });
+  }
+
+  /**
+   * Assemble a worker's leading SystemMessage (§4.2.1 worker head) via the
+   * SHARED `assembleHead` path — one head definition for the orchestrator and
+   * every worker. Builds the worker-variant snapshot (worker prompt, `core.rules`,
+   * worker meta block, skills index, manual TOC), excludes AGENTS.md / memory /
+   * plan status / worker list / orchestrator conversation, and renders the same
+   * cache-break block layout the orchestrator uses.
+   */
+  private buildWorkerSystemMessage(
+    def: AgentDefinition,
+    rootDir: string,
+    ctx: { workerId: string; worker?: string },
+    roundState?: WorkerRoundState,
+  ): SystemMessage {
+    const snapshot = buildWorkerSnapshot({
+      systemPrompt: def.systemPrompt ?? "",
+      hardRules: this.deps.hardRules ?? "",
+      environment: this.workerEnvironment(def, rootDir, ctx, roundState),
+      skills: this.deps.skillsIndex ? this.deps.skillsIndex() : [],
+      manuals: this.deps.manualsIndex ? this.deps.manualsIndex() : [],
+    });
+    const head = assembleHead(snapshot);
+    const blocks = appendTurnMetadata(head, snapshot);
+    return new SystemMessage({ content: blocks.map((b) => ({ type: "text" as const, text: b.text })) });
+  }
+
+  /** The worker-variant meta-block facts (§4.4, §7.1): the worker's own name and
+   * parent session, its worktree root as the workspace root, its tool-round
+   * budget and the rounds used so far, and NO Workers/Concurrency line (set by
+   * the `worker` field). Reuses the construction-time endpoint facts. */
+  private workerEnvironment(
+    def: AgentDefinition,
+    rootDir: string,
+    ctx: { workerId: string; worker?: string },
+    roundState?: WorkerRoundState,
+  ): EnvironmentFacts {
+    const cfg = this.deps.getConfig();
+    const parent = this.ownerSessionId();
+    return {
+      cwd: rootDir,
+      workspaceRoot: rootDir,
+      gitBranch: null,
+      gitDirty: null,
+      platform: process.platform,
+      osRelease: "",
+      shell: process.env["SHELL"] ?? "unknown",
+      date: new Date().toISOString(),
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+      sessionId: ctx.workerId,
+      agentMode: ctx.worker ?? def.name,
+      model: this.deps.modelId ?? def.model ?? cfg.modelSelected ?? "(worker)",
+      contextLimit: this.deps.window,
+      maxOutputTokens: this.deps.maxOutputTokens ?? null,
+      vision: false,
+      parallelToolCalls: null,
+      turnMaxConcurrency: cfg.turnMaxConcurrency,
+      ingestParallel: cfg.turnMaxConcurrency,
+      toolRoundsUsed: roundState?.counter.count ?? 0,
+      toolRoundsLimit: cfg.turnMaxToolRounds,
+      remainingContextPct: null,
+      maxReadLines: cfg.workspaceMaxReadLines,
+      cacheDir: ".voidrift/cache/",
+      workers: [],
+      worker: { name: ctx.worker ?? def.name, parent },
+    };
+  }
+
+  /**
+   * §3.3/§7.2 — the worker's tool-round middleware, mirroring the engine's
+   * orchestrator round middleware (reusing the shared `ToolRoundCounter` and
+   * notes, DRY). After each model response that calls a tool it records one
+   * round; at 80% it queues the one wrap-up note (prepended to the NEXT model
+   * request as a system note, since a worker has no decision-point note seam);
+   * at the limit it STRIPS the response's tool calls so the native loop ends
+   * cleanly with the model's last text and flags `limitReached` so the invoke
+   * ends the worker on the terminal `limit_reached` status with a non-empty
+   * result. The derived `subagentRecursionLimit` stays the hard backstop (§3.6).
+   */
+  private workerRoundMiddleware(state: WorkerRoundState) {
+    const spec = {
+      name: "voidrift-worker-tool-round-limit",
+      wrapModelCall: async (
+        request: { messages?: BaseMessage[] },
+        handler: (r: unknown) => unknown,
+      ) => {
+        // Prepend any queued 80% wrap-up note as a leading system note so the
+        // worker is told to answer now or delegate (the orchestrator appends it
+        // via the decision point; a worker has no such seam, so it rides here).
+        const note = state.counter.takeNote();
+        if (note && Array.isArray(request.messages)) {
+          request = { ...request, messages: [new SystemMessage(note), ...request.messages] };
+        }
+        const result = (await handler(request)) as unknown;
+        if (result instanceof AIMessage) {
+          const calls = result.tool_calls ?? [];
+          if (calls.length > 0) {
+            for (const c of calls) if (c.name) state.tools.push(c.name);
+            const { atLimit } = state.counter.recordRound();
+            if (atLimit) {
+              state.limitReached = true;
+              const text =
+                typeof result.content === "string" ? result.content : JSON.stringify(result.content);
+              state.lastText = text;
+              // Strip the tool calls so the native loop ends with the last text.
+              return new AIMessage({ content: text, ...(result.id ? { id: result.id } : {}) });
+            }
+          }
+        }
+        return result;
+      },
+    };
+    return createMiddleware(spec as Parameters<typeof createMiddleware>[0]);
   }
 
   /** §10.14/§10.7 — a `wrapModelCall` middleware that emits ONE `MODEL_USAGE`
@@ -1007,6 +1183,19 @@ export class Subagents {
   private resolveAgentModel(def: AgentDefinition): BaseChatModel | undefined {
     if (!def.model) return undefined;
     return this.deps.resolveModel?.(def.model);
+  }
+
+  /** §7.2/§3.6 — the effective LangGraph recursion ceiling for a dispatched
+   * worker: the explicit `subagentRecursionLimit` override when set, else derived
+   * from `turnMaxToolRounds` with the same margin as the orchestrator's
+   * `turnRecursionLimit` (reusing the shared `workerRecursionLimit` entity, DRY). */
+  private workerRecursion(cfg: Config): number {
+    return workerRecursionLimit(
+      cfg.turnMaxToolRounds,
+      cfg.subagentRecursionLimit,
+      this.deps.limits?.get("toolRounds.recursionFactor"),
+      this.deps.limits?.get("toolRounds.recursionMargin"),
+    );
   }
 
   /**
@@ -1257,7 +1446,9 @@ export class Subagents {
         return w;
       }
       w.summary = result.summary;
-      this.transition(w, result.ok ? "merged" : "failed");
+      // §3.3/§7.2 — a worker that hit its tool-round budget ends on the terminal
+      // `limit_reached` status with its non-empty result (never merged/failed).
+      this.transition(w, result.status === "limit_reached" ? "limit_reached" : result.ok ? "merged" : "failed");
       return w;
     }
 
@@ -1322,6 +1513,20 @@ export class Subagents {
       } else if (w.staging) {
         await this.deps.staging.discard(w.staging);
       }
+      return w;
+    }
+    // §3.3/§7.2 — a WRITE-CLASS worker that reached its tool-round budget ends on
+    // the terminal `limit_reached` status with its non-empty result; its partial
+    // work is preserved as a recovery artifact (the worktree/staging folder) for
+    // the orchestrator to re-dispatch only the unanswered part (§12.8), never
+    // auto-reviewed or merged while incomplete.
+    if (result.status === "limit_reached") {
+      w.summary = result.summary;
+      if (worktree) {
+        const recoveryBranch = await this.deps.vcs.abandonWorktree(worktree);
+        w.recoveryBranch = recoveryBranch;
+      }
+      this.transition(w, "limit_reached");
       return w;
     }
     w.summary = result.summary;
@@ -1461,7 +1666,19 @@ export class Subagents {
     ctx: { fanoutId: string; workerId: string; worker?: string; taskId?: string },
     stagingRun?: string,
     resultSchema?: unknown,
-  ): Promise<{ ok: boolean; summary: string }> {
+  ): Promise<{ ok: boolean; summary: string; status?: WorkerStatus }> {
+    // §3.3/§7.2 — the worker's own tool-round budget (`turnMaxToolRounds`),
+    // driven by the shared round counter so the 80% wrap-up note and the
+    // terminal `limit_reached` ending match the orchestrator's (DRY).
+    const roundState: WorkerRoundState = {
+      counter: new ToolRoundCounter(
+        () => this.deps.getConfig().turnMaxToolRounds,
+        () => this.deps.limits?.get("toolRounds.wrapUpRatio") ?? limitDefault("toolRounds.wrapUpRatio"),
+      ),
+      tools: [],
+      limitReached: false,
+      lastText: "",
+    };
     try {
       // §3.8 — a per-dispatch result schema makes the worker run with a
       // `responseFormat` (the portable toolStrategy, which works on any
@@ -1475,14 +1692,24 @@ export class Subagents {
         validated = validateResponseSchema(resultSchema, this.deps.limits?.get("tools.responseSchemaMaxBytes"));
         if (validated.ok) responseFormat = selectStrategy(validated.value, "tool").format;
       }
-      const agent = this.buildWorker(def, rootDir, ctx, stagingRun, undefined, responseFormat);
+      const agent = this.buildWorker(def, rootDir, ctx, stagingRun, undefined, responseFormat, roundState);
       const cfg = this.deps.getConfig();
       const invokeResult = (await this.invokeIsolated(() =>
         agent.invoke(
           { messages: [{ role: "user", content: task }] },
-          { recursionLimit: cfg.subagentRecursionLimit, signal },
+          { recursionLimit: this.workerRecursion(cfg), signal },
         ),
       )) as { messages: BaseMessage[]; structuredResponse?: unknown };
+      // §3.3/§7.2 — the worker reached its tool-round budget: end on the terminal
+      // `limit_reached` status and ALWAYS carry a non-empty result — the model's
+      // last assistant text if it produced any, otherwise a generated summary of
+      // the rounds used and the tools called (reusing the shared `limitSummary`).
+      if (roundState.limitReached) {
+        const rc = roundState.counter;
+        const text = this.lastText(invokeResult.messages ?? []) || roundState.lastText;
+        const summary = text.trim() !== "" ? text : limitSummary(rc.count, rc.max, roundState.tools);
+        return { ok: true, status: "limit_reached", summary };
+      }
       // §3.8 — a valid typed result is JSON-serialized as the summary that
       // converges to the orchestrator; otherwise the worker's final text.
       if (validated?.ok) {
@@ -1530,7 +1757,7 @@ export class Subagents {
       const result = (await this.invokeIsolated(() =>
         agent.invoke(
           { messages: [{ role: "user", content: `Task: ${task}\nReview the work.` }] },
-          { recursionLimit: cfg.subagentRecursionLimit, signal },
+          { recursionLimit: this.workerRecursion(cfg), signal },
         ),
       )) as { messages: BaseMessage[] };
       const verdict = this.lastText(result.messages ?? []);

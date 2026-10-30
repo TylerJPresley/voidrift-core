@@ -2,6 +2,7 @@
   "version": 1,
   "entries": {
     "agents/implementer/agent.json": [
+      "d2215d1cade0299f74f3373044582986848ca469f35483b289acc7d804626e29",
       "f37e606263bbef443196686312c68705b4f4da8634eea00d0e0fad59ba10d1e0"
     ],
     "agents/implementer/prompt.md": [
@@ -45,6 +46,7 @@
       "6c934cd6bbd5bb464a47aa892df9639ce4a5d22b2790304036a69c3451818d08"
     ],
     "agents/reviewer/agent.json": [
+      "e057d7702a2f00a872573b7de9f6692f5bcdba3df77fc225dbf78f323326ec74",
       "8de50f2fe0efda17533a5896781d19644d3a4e2eea95cf8229c9714c92bdbbf7"
     ],
     "agents/reviewer/prompt.md": [

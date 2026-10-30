@@ -67,6 +67,14 @@ export interface EnvironmentFacts {
   cacheDir: string;
   /** The dispatchable workers for the active top-level agent, by name (§7.1). */
   workers: string[];
+  /**
+   * §4.4/§7.1 — present only for a dispatched WORKER's meta block (the worker
+   * variant). When set, the block carries NO Workers and NO Concurrency line
+   * (a worker neither fans out nor sees siblings), and its Session line names
+   * the worker and its parent session. `name` is the worker name, `parent` the
+   * parent (owner) session id. Absent → the orchestrator variant (every field).
+   */
+  worker?: { name: string; parent: string };
 }
 
 /** The result of a render: the text only (all fields always render). */
@@ -115,7 +123,12 @@ function lines(env: EnvironmentFacts): string[] {
   }
   // ── Session ───────────────────────────────────────────────────────────────
   out.push(`  agent: ${safe(env.agentMode)}`);
-  out.push(`  session: ${safe(env.sessionId)}`);
+  if (env.worker) {
+    // §4.4/§7.1 worker variant — name the worker and its parent session.
+    out.push(`  session: worker ${safe(env.worker.name)} (parent ${safe(env.worker.parent)})`);
+  } else {
+    out.push(`  session: ${safe(env.sessionId)}`);
+  }
   // ── Model ─────────────────────────────────────────────────────────────────
   out.push(`  model: ${safe(env.model)}`);
   out.push(`  context window: ${env.contextLimit}`);
@@ -126,8 +139,12 @@ function lines(env: EnvironmentFacts): string[] {
     out.push(`  parallel tool calls: ${env.parallelToolCalls ? "yes" : "no"}`);
   }
   // ── Concurrency (kept last) — numbers so the model sizes a fan-out batch ──
-  out.push(`  workers in parallel: ${env.turnMaxConcurrency}`);
-  out.push(`  ingest parallel: ${env.ingestParallel}`);
+  // §4.4/§7.1 — a WORKER carries NO Concurrency line: it neither fans out nor
+  // sees siblings. The orchestrator variant renders both numbers.
+  if (!env.worker) {
+    out.push(`  workers in parallel: ${env.turnMaxConcurrency}`);
+    out.push(`  ingest parallel: ${env.ingestParallel}`);
+  }
   // ── Limits to plan around (kept last) ────────────────────────────────────
   out.push(`  tool rounds: ${env.toolRoundsUsed}/${env.toolRoundsLimit}`);
   if (env.remainingContextPct !== null) {
@@ -137,8 +154,15 @@ function lines(env: EnvironmentFacts): string[] {
   out.push(`  max read lines: ${env.maxReadLines}`);
   out.push(`  cache dir: ${safe(env.cacheDir)}`);
   // ── Workers (kept last) ──────────────────────────────────────────────────
-  const workers = env.workers.length > 0 ? env.workers.map(safe).join(", ") : "none";
-  out.push(`  available workers: ${workers}`);
+  // §4.4/§7.1 — a WORKER carries NO Workers line (it cannot dispatch, §7.1).
+  if (!env.worker) {
+    const workers = env.workers.length > 0 ? env.workers.map(safe).join(", ") : "none";
+    out.push(`  available workers: ${workers}`);
+    // §4.4/§7.2 — the worker tool-round budget each dispatched worker runs under
+    // (`turnMaxToolRounds`, the orchestrator's default), so the orchestrator
+    // sizes a task to that budget.
+    out.push(`  worker tool-round budget: ${env.toolRoundsLimit}`);
+  }
   return out;
 }
 

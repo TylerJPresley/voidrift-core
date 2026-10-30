@@ -31,6 +31,27 @@ export function deriveRecursionLimit(
   return factor * maxToolRounds + margin;
 }
 
+/**
+ * The effective LangGraph recursion ceiling for a dispatched WORKER (§7.2, §3.6):
+ * the explicit `subagentRecursionLimit` override when set, otherwise DERIVED from
+ * `turnMaxToolRounds` with the SAME margin as the orchestrator's
+ * `turnRecursionLimit` (via `deriveRecursionLimit`) — budgets are set per tier,
+ * never assumed to inherit. A worker's ROUND budget is `turnMaxToolRounds`, the
+ * orchestrator's default. `0`/non-positive maps to a large finite ceiling, never
+ * passed as 0 (mirroring the orchestrator). */
+export function workerRecursionLimit(
+  turnMaxToolRounds: number,
+  subagentRecursionLimit: number | undefined,
+  factor?: number,
+  margin?: number,
+): number {
+  const base =
+    subagentRecursionLimit !== undefined
+      ? subagentRecursionLimit
+      : deriveRecursionLimit(turnMaxToolRounds, factor, margin);
+  return base <= 0 ? 1_000_000 : base;
+}
+
 /** The 80%-of-budget harness note (§3.3). `used`/`max` are the rounds so far and
  * the ceiling. */
 export function roundBudgetNote(used: number, max: number): string {

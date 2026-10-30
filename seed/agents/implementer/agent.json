@@ -9,6 +9,9 @@
     "workspace_map",
     "write_file",
     "edit_file",
-    "execute_command"
+    "execute_command",
+    "read_manual",
+    "list_skills",
+    "load_skill"
   ]
 }

@@ -56,6 +56,7 @@ import { FetchHttpAdapter } from "./adapters/http-fetch.js";
 import { Skills } from "./use-cases/skills.js";
 import { Manuals } from "./use-cases/manuals.js";
 import { Prompts } from "./use-cases/prompts.js";
+import { BUILTIN_PROMPTS } from "./entities/prompts/prompt-registry.js";
 import { Plugins, type CoreServices, type PluginCommandHandler } from "./use-cases/plugins.js";
 import { SkillsDirectory } from "./adapters/skills-directory.js";
 import { AgentsDirectory } from "./adapters/agents-directory.js";
@@ -2113,6 +2114,14 @@ export async function createCore(opts: CoreOptions = {}): Promise<CoreReady> {
       tempDir: systemTempDir(),
       window: model.resolve().contextLimit,
       maxOutputTokens: model.resolve().maxOutputTokens ?? null,
+      // §4.2.1 worker head — the SHARED head-assembly sources, so a worker's
+      // context is built by the SAME path as the orchestrator's from the worker's
+      // own agent definition: the `core.rules` digest, the skills index, the
+      // manual TOC, and the model id for the worker-variant meta block.
+      hardRules: BUILTIN_PROMPTS["core.rules"] ?? "",
+      skillsIndex: () => skills.indexLines(),
+      manualsIndex: () => manuals.indexLines(),
+      modelId: model.resolve().model,
       // §11 / invariant 14 — resolve a worker's `AgentDefinition.model` STRING
       // endpoint key to a bound model internally; an unknown key is rejected at
       // registration with MODEL_NOT_CONFIGURED.
