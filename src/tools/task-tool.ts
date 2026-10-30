@@ -60,14 +60,11 @@ const SLUG = /^[a-z0-9][a-z0-9-]{0,63}$/;
  * false` on the array item so the model cannot smuggle a field into an entry. */
 const BATCH_TASK_SCHEMA = z
   .object({
-    id: z.string().describe("A unique lowercase-slug id for this task within the batch."),
-    worker: z.string().describe("The worker to dispatch (one of the listed names)."),
-    task: z.string().describe("The task for the worker, stated clearly and self-contained."),
-    context: z.string().optional().describe("Optional extra context the worker needs."),
-    dependsOn: z
-      .array(z.string())
-      .optional()
-      .describe("Ids of tasks in THIS batch that must finish before this one starts."),
+    id: z.string().describe("Unique lowercase-slug id within the batch."),
+    worker: z.string(),
+    task: z.string(),
+    context: z.string().optional(),
+    dependsOn: z.array(z.string()).optional().describe("Ids in this batch that must finish first."),
   })
   .strict();
 
@@ -84,13 +81,13 @@ const BATCH_TASK_SCHEMA = z
  */
 export const TASK_SCHEMA = z
   .object({
-    worker: z.string().optional().describe("Single form: the worker to dispatch (one of the listed names)."),
-    task: z.string().optional().describe("Single form: the task, stated clearly and self-contained."),
-    context: z.string().optional().describe("Single form: optional extra context the worker needs."),
+    worker: z.string().optional().describe("Single form: worker to dispatch."),
+    task: z.string().optional().describe("Single form: the task, clear and self-contained."),
+    context: z.string().optional().describe("Single form: optional extra context."),
     tasks: z
       .array(BATCH_TASK_SCHEMA)
       .optional()
-      .describe("Batch form: the tasks to fan out in one call (1..8), each { id, worker, task, context?, dependsOn? })."),
+      .describe("Batch form: 1..8 tasks to fan out in one call."),
   })
   .strict();
 
@@ -114,25 +111,18 @@ function sanitizeLine(text: string): string {
 }
 
 /** Build the per-agent tool description listing the dispatchable workers and the
- * two accepted forms with a compact example (§8). */
+ * two accepted forms (§8). Decision-relevant only: what the tool does, the
+ * workers, the two forms, and a pointer to the worker playbook (scope-splitting,
+ * context facts, dependency summaries, a worked example) in the delegation
+ * manual — see `read_manual {action:"read", id:"core/delegation"}` (§12.8). */
 export function taskDescription(workers: DispatchableWorker[]): string {
-  const head =
-    "Delegate work to specialized worker agents. Each worker runs in isolation, is independently " +
-    "reviewed, and returns a summary of what it did. Choose workers by name.";
+  const head = "Delegate work to specialized worker agents, chosen by name. Each returns a summary.";
   const forms =
     "Two forms (use exactly one):\n" +
     "- Single: { worker, task, context? }\n" +
-    "- Batch (reliable parallel fan-out): { tasks: [ { id, worker, task, context?, dependsOn? } ] } " +
-    "— 1 to 8 tasks, each `id` a unique lowercase slug; `dependsOn` lists ids in this same batch " +
-    "that must finish first (their summaries are prefixed into this task's brief).\n" +
-    "Split a fan-out by NON-OVERLAPPING scope so two workers never read or search the same thing, " +
-    "and put the facts you ALREADY know (paths, file names, prior findings) in each task's `context` " +
-    "so no worker re-discovers them. A dependent task receives its dependencies' summaries by reference — " +
-    "work from those, do not re-ingest the same files.\n" +
-    'Example: { "tasks": [ ' +
-    '{ "id": "a", "worker": "researcher", "task": "survey X", "context": "known: package.json at repo root lists deps" }, ' +
-    '{ "id": "b", "worker": "researcher", "task": "survey Y (different scope than X)" }, ' +
-    '{ "id": "c", "worker": "planner", "task": "plan from A and B", "dependsOn": ["a", "b"] } ] }';
+    "- Batch (parallel fan-out): { tasks: [ { id, worker, task, context?, dependsOn? } ] } (1..8).\n" +
+    "Splitting scope, context and dependencies: see " +
+    'read_manual {action:"read", id:"core/delegation"}.';
   if (workers.length === 0) return `${head}\n(No workers are currently dispatchable.)\n\n${forms}`;
   const lines = workers
     .map((w) => `- ${w.name} — ${sanitizeLine(w.description) || "(no description)"}`)

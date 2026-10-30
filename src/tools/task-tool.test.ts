@@ -121,12 +121,25 @@ describe("task tool — the bound JSON schema is a flat object (no top-level any
     expect(items?.additionalProperties).toBe(false);
   });
 
-  it("description lists both forms with a compact example", () => {
+  it("description lists both forms and points to the delegation manual", () => {
     const d = taskDescription(workers);
     expect(d).toContain("Single: { worker, task, context? }");
     expect(d).toContain("Batch");
     expect(d).toContain("dependsOn");
-    expect(d).toContain('"tasks"'); // the example
+    // The one-line pointer to the worker playbook (§12.8) shows the FULL call so
+    // the model sends action+id (a bare headingPath without id returns NOT_FOUND).
+    expect(d).toContain('read_manual {action:"read", id:"core/delegation"}');
+    // …and the long playbook (the JSON example, the scope-split guidance) is NOT
+    // inline in the schema any more — it was relocated to the manual.
+    expect(d).not.toContain('"tasks"');
+    expect(d).not.toContain("NON-OVERLAPPING");
+  });
+
+  it("the trimmed description is well under the former length", () => {
+    // Before the trim the description was ~1750 chars (worker playbook + JSON
+    // example inline). The decision-relevant description stays compact.
+    const d = taskDescription(workers);
+    expect(d.length).toBeLessThan(900);
   });
 });
 
