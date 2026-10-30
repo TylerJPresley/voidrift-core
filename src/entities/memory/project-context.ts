@@ -340,13 +340,17 @@ export function assembleProjectHead(
   files: ProjectFile[],
   budgetChars: number,
   cachedDigest: string | null = null,
+  digestMaxChars: number = limitDefault("memory.projectDigestMaxChars"),
 ): ProjectContext {
   const full = mergeFull(files);
   const hash = contentHash(full);
   if (full.length <= budgetChars) {
     // Fits the budget, but the head still carries a REAL structural digest, not
     // the whole body — the full copy rides the session-cache pointer (§4.2.1).
-    const digest = projectDigest(full);
+    // `digestMaxChars` is the effective `memory.projectDigestMaxChars` the caller
+    // threads from the limits port (live override); the registry default keeps
+    // the entity pure when called directly.
+    const digest = projectDigest(full, digestMaxChars);
     return { full, digest, truncated: true, limit: budgetChars, overflow: false, hash };
   }
   let head: string;

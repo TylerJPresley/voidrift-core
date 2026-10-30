@@ -157,3 +157,53 @@ describe("§6.6/§4.8/§8.7 — fit-fraction head budget and non-blocking digest
     expect(ctx.digest).not.toContain("A".repeat(200));
   });
 });
+
+describe("memory.projectDigestMaxChars is live through the real memory path (§4.2.1/§13.11)", () => {
+  // A multi-section AGENTS.md that FITS a large head budget, so the head rides
+  // the structural digest whose length memory.projectDigestMaxChars bounds.
+  const content = [
+    "# AGENTS.md",
+    "Lead paragraph describing the project in one sentence. More detail here.",
+    "## Build",
+    "Run the gate before committing. It builds, tests and lints every package.",
+    "## Testing",
+    "Everything is tested. A bug fix carries a regression test written first.",
+    "## Conventions",
+    "All configuration files are JSON and prose is Markdown throughout the repo.",
+  ].join("\n");
+  const files: ProjectFile[] = [{ path: "AGENTS.md", content, depth: 0, scope: "workspace" }];
+
+  async function headFor(digestMaxChars?: number): Promise<string> {
+    const bus = new EventBus();
+    // Large projectChars so the content fits the head budget (digest rides, no
+    // overflow); the digest cap is the only thing that varies.
+    const layers: Parameters<typeof resolveLimits>[0] = [
+      {
+        layer: "project",
+        limits: {
+          memory: {
+            projectChars: 100_000,
+            ...(digestMaxChars !== undefined ? { projectDigestMaxChars: digestMaxChars } : {}),
+          },
+        },
+      },
+    ];
+    const limits = new LimitsCapability(resolveLimits(layers), bus);
+    const mem = new Memory(makeDeps(limits, files));
+    const ctx = await mem.projectContext();
+    expect(ctx.overflow).toBe(false);
+    return ctx.digest;
+  }
+
+  it("a config override of the key shortens the head digest through projectContext()", async () => {
+    const wide = await headFor(2000);
+    const tight = await headFor(40);
+    expect(tight.length).toBeLessThan(wide.length);
+  });
+
+  it("the unset default matches the explicit registry default (byte-identical)", async () => {
+    const unset = await headFor(undefined);
+    const atDefault = await headFor(2000);
+    expect(unset).toBe(atDefault);
+  });
+});

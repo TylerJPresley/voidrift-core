@@ -79,16 +79,34 @@ describe("sequence.evidenceExamplesPerStep is live (§10.6, §13.11)", () => {
   });
 });
 
-describe("project head digest default is unchanged (§4.8/§8.7)", () => {
-  it("assembleProjectHead first-turn marked head is budget-bound (byte-identical default)", () => {
-    const files = [{ path: "AGENTS.md", content: "x".repeat(500), depth: 0, scope: "workspace" as const }];
-    const ctx = assembleProjectHead(files, 100);
-    expect(ctx.overflow).toBe(true);
-    // The head is bound by the budget (100), NOT shrunk by the digest default —
-    // memory.projectDigestMaxChars is 'default only' (noLiveOverride): the real
-    // head digest is the §8.7 ingest digest, so the former behaviour is kept.
-    expect(ctx.digest.length).toBeGreaterThan(100);
-    expect(ctx.digest).toContain("x");
+describe("memory.projectDigestMaxChars is live (§4.2.1/§6.6, §13.11)", () => {
+  // A multi-section AGENTS.md that FITS the budget, so the head rides the
+  // structural digest (projectDigest) whose length the cap bounds.
+  const content = [
+    "# AGENTS.md",
+    "Lead paragraph describing the project in one sentence. More detail here.",
+    "## Build",
+    "Run the gate before committing. It builds, tests and lints every package.",
+    "## Testing",
+    "Everything is tested. A bug fix carries a regression test written first.",
+    "## Conventions",
+    "All configuration files are JSON and prose is Markdown throughout the repo.",
+  ].join("\n");
+  const files = [{ path: "AGENTS.md", content, depth: 0, scope: "workspace" as const }];
+
+  it("the default (no live value) is byte-identical to the former registry-default behaviour", () => {
+    const ctx = assembleProjectHead(files, 100_000);
+    const ctxDefault = assembleProjectHead(files, 100_000, null, limitDefault("memory.projectDigestMaxChars"));
+    expect(ctx.overflow).toBe(false);
+    expect(ctx.digest).toBe(ctxDefault.digest);
+  });
+
+  it("a smaller override shortens the fit-path head digest", () => {
+    const wide = assembleProjectHead(files, 100_000, null, 2000);
+    const tight = assembleProjectHead(files, 100_000, null, 40);
+    expect(wide.overflow).toBe(false);
+    expect(tight.overflow).toBe(false);
+    expect(tight.digest.length).toBeLessThan(wide.digest.length);
   });
 });
 

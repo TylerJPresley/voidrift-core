@@ -63,7 +63,7 @@ describe("limits registry (§13.11)", () => {
     // (floor(maxChars / sectionCount)), so there is no separate sentence-cap key.
     const max = getLimitSpec("memory.projectDigestMaxChars");
     expect(max).toMatchObject({ default: 2000, unit: "chars", class: "tunable", action: "warn", min: 1 });
-    expect(typeof max?.noLiveOverride).toBe("string");
+    expect(max?.noLiveOverride).toBeUndefined();
     expect(getLimitSpec("memory.projectDigestSentenceChars")).toBeUndefined();
   });
 });
