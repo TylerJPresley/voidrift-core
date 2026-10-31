@@ -392,36 +392,32 @@ describe("fan-out architecture end to end (§7)", () => {
     expect(statuses).not.toContain("merged");
   }, 20_000);
 
-  it("(6) the consolidated result respects task.batchResultMaxChars with a by-reference remainder", async () => {
-    // A worker returns a summary far larger than the cap. The consolidated tool
-    // result the orchestrator sees carries a bounded head + a `[full result:
-    // <handle>]` reference, never the whole body inline.
+  it("(6) the consolidated result carries a worker summary WHOLE when it fits (one delivery rule, §7.2/§8.3)", async () => {
+    // A worker returns a sizeable summary. With ample window the consolidated
+    // tool result the orchestrator sees carries it WHOLE (the one delivery rule):
+    // no per-worker character cap, no by-reference handle for a batch result.
     const model = new RoleModel({
       sentinel: "BIGRESULT",
       orchestratorToolCalls: [{ name: "task", args: { tasks: [{ id: "a", worker: "researcher", task: "BIGRESULT produce a big summary" }] } }],
-      // The worker's FINAL summary is its converging result; make it far larger
-      // than the cap so the by-reference seam must engage (§7.2).
       workerFinalText: () => "HEAD-MARKER " + "Z".repeat(20_000),
     });
-    const { api } = await makeCore(model, seed({ turnMaxConcurrency: 2, limits: { task: { batchResultMaxChars: 200 } } } as unknown as Partial<Config>), "research");
+    const { api } = await makeCore(model, seed({ turnMaxConcurrency: 2 }), "research");
     await seedAgents(api);
     const byRef: { what: string; key: string }[] = [];
     api.events.subscribe("BY_REFERENCE", (e) => byRef.push(e.payload as { what: string; key: string }));
     const id = await startResearch(api);
     const res = await api.session.send(id, { input: "big result" });
     expect(res.ok && res.value.status).toBe("completed");
-    // The oversized result tripped the batch-result cap and stored the WHOLE body
-    // by reference (one BY_REFERENCE naming the batch-result key).
-    expect(byRef.some((b) => b.key === "task.batchResultMaxChars")).toBe(true);
-    // The orchestrator's consolidated tool result holds a bounded HEAD plus a
-    // `[full result: <handle>]` reference — never the whole 20k body inline.
+    // No batch-result by-reference: that per-worker cap is gone (P2).
+    expect(byRef.some((b) => b.key === "task.batchResultMaxChars")).toBe(false);
     const exp = await api.session.export(id, { format: "md", includeToolResults: true });
     expect(exp.ok).toBe(true);
     const body = exp.ok ? exp.value.content ?? "" : "";
+    // The whole worker summary reached the orchestrator — head and body — with no
+    // per-worker `[full result:]` clip (the §8.3 fit test would evict only if it
+    // did not fit the window, which this ample-window run does).
     expect(body).toContain("HEAD-MARKER");
-    expect(body).toMatch(/\[full result: [^\]]+\]/);
-    // The full 20k payload did NOT land inline in the orchestrator conversation.
-    expect(body).not.toContain("Z".repeat(1_000));
+    expect(body).toContain("Z".repeat(1_000));
   }, 20_000);
 
   it("(7) worker transcripts never enter the orchestrator messages (orchestrator context stays small)", async () => {

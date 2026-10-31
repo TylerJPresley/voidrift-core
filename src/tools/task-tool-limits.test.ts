@@ -96,20 +96,24 @@ describe("task tool — batch cap (task.batchMax, TASK2)", () => {
   });
 });
 
-describe("task tool — batch result cap (task.batchResultMaxChars, TASK4)", () => {
-  it("default equals 4000", () => {
-    expect(limitDefault("task.batchResultMaxChars")).toBe(4000);
+describe("task tool — batch result follows the one delivery rule, no per-worker cap (P2, §7.2/§8.3)", () => {
+  it("the key task.batchResultMaxChars is removed from the registry", () => {
+    expect(() => limitDefault("task.batchResultMaxChars")).toThrow();
   });
 
-  it("an override clips the per-worker result with a marker and emits one LIMIT_HIT", async () => {
-    const { limits, hits } = limitsWith({ task: { batchResultMaxChars: 10 } });
+  it("a large worker summary is carried WHOLE in the consolidated result — no truncation marker, no hit", async () => {
+    const { limits, hits } = limitsWith({});
+    const big = "z".repeat(100);
     const dispatch = vi.fn(async () => ({
       fanoutId: "f",
-      workers: [{ workerId: "w1", agent: "researcher", status: "merged", summary: "z".repeat(100), pendingApproval: false, taskId: "a" }],
+      workers: [{ workerId: "w1", agent: "researcher", status: "merged", summary: big, pendingApproval: false, taskId: "a" }],
     }) as unknown as FanoutResult);
     const t = buildTaskTool({ workers, dispatch, limits });
     const msg = await invoke(t, { tasks: [{ id: "a", worker: "researcher", task: "do" }] });
-    expect(String(msg.content)).toContain("[truncated at limits.task.batchResultMaxChars");
-    expect(hits.filter((h) => h.key === "task.batchResultMaxChars").length).toBe(1);
+    // The whole summary rides the consolidated result; the §8.3 fit test at the
+    // decision point handles whole-vs-pointer when it returns to the orchestrator.
+    expect(String(msg.content)).toContain(big);
+    expect(String(msg.content)).not.toContain("[truncated at");
+    expect(hits.filter((h) => h.key === "task.batchResultMaxChars").length).toBe(0);
   });
 });

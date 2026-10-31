@@ -33,6 +33,9 @@ import {
   workerRecursionLimit,
   limitSummary,
   ToolRoundCounter,
+  contextBudgetNote,
+  workerEndReport,
+  type WorkerEnding,
 } from "../entities/tool-round.js";
 import {
   validateResponseSchema,
@@ -67,8 +70,7 @@ import type { HttpPort } from "../entities/ports/http-port.js";
 import type { FileSystemPort } from "../entities/ports/host.js";
 import type { ProviderHandler } from "./web-search.js";
 import { maskSecrets, maskText } from "./secret-mask.js";
-import { createModelNetworkMiddleware } from "./model-network-middleware.js";
-import { CHARS_PER_TOKEN } from "../entities/context/budget.js";
+import { createModelNetworkMiddleware, endedOnFirstByteTimeout } from "./model-network-middleware.js";
 import { resolveRules } from "./engine.js";
 import { hostAllowedByExact } from "../entities/exact-allow.js";
 import { METADATA_HOSTS_ID } from "../entities/never-list.js";
@@ -328,13 +330,6 @@ interface LiveWorker {
 /** The §8.2 shell tool a staged worker cannot hold (§7.4 no-shell limit, D5). */
 const SHELL_TOOL = "execute_command";
 
-/** §4.8/§11.5 — the character count of one message's content, the numerator of
- * the worker watchdog's input estimate. A content-block message is counted by
- * its serialized text; a plain string by its length. */
-function workerMessageChars(m: BaseMessage): number {
-  return typeof m.content === "string" ? m.content.length : JSON.stringify(m.content).length;
-}
-
 /**
  * §3.3/§7.2 — the per-invocation tool-round state for a dispatched worker. The
  * round middleware records rounds against the shared `ToolRoundCounter`
@@ -348,6 +343,14 @@ interface WorkerRoundState {
   tools: string[];
   limitReached: boolean;
   lastText: string;
+  /** §7.2 — the peak provider-reported input tokens across this worker's calls,
+   * the numerator of the end report's `context` percentage of the window. */
+  maxInputTokens: number;
+  /** §3.3 — the one 80%-of-context wrap-up note queued for the next request,
+   * null once taken (once per worker). */
+  pendingContextNote: string | null;
+  /** §3.3 — true once the 80%-context note has been queued, so it fires once. */
+  contextNoteEmitted: boolean;
 }
 
 /**
@@ -1082,14 +1085,35 @@ export class Subagents {
         request: { messages?: BaseMessage[] },
         handler: (r: unknown) => unknown,
       ) => {
-        // Prepend any queued 80% wrap-up note as a leading system note so the
-        // worker is told to answer now or delegate (the orchestrator appends it
-        // via the decision point; a worker has no such seam, so it rides here).
-        const note = state.counter.takeNote();
-        if (note && Array.isArray(request.messages)) {
-          request = { ...request, messages: [new SystemMessage(note), ...request.messages] };
+        // Prepend any queued wrap-up note as a leading system note so the worker
+        // is told to answer now or delegate (the orchestrator appends these via
+        // the decision point; a worker has no such seam, so they ride here): the
+        // 80%-of-rounds note AND the one 80%-of-context note (§3.3/§7.2).
+        const notes: string[] = [];
+        const roundNote = state.counter.takeNote();
+        if (roundNote) notes.push(roundNote);
+        if (state.pendingContextNote) {
+          notes.push(state.pendingContextNote);
+          state.pendingContextNote = null;
+        }
+        if (notes.length > 0 && Array.isArray(request.messages)) {
+          request = { ...request, messages: [new SystemMessage(notes.join("\n")), ...request.messages] };
         }
         const result = (await handler(request)) as unknown;
+        // §7.2 — track the peak provider-reported input tokens for the end
+        // report's context percentage, and queue the ONE 80%-context wrap-up note
+        // when the worker's occupancy crosses the window's safety-net share.
+        const input = (result as { usage_metadata?: { input_tokens?: number } })?.usage_metadata?.input_tokens ?? 0;
+        if (input > state.maxInputTokens) state.maxInputTokens = input;
+        const window = this.deps.window;
+        if (!state.contextNoteEmitted && window > 0) {
+          const pct = (state.maxInputTokens / window) * 100;
+          const noteAt = this.deps.getConfig().contextSafetyNetPct;
+          if (pct >= noteAt) {
+            state.contextNoteEmitted = true;
+            state.pendingContextNote = contextBudgetNote(Math.round(pct));
+          }
+        }
         if (result instanceof AIMessage) {
           const calls = result.tool_calls ?? [];
           if (calls.length > 0) {
@@ -1115,8 +1139,8 @@ export class Subagents {
    * shared factory the orchestrator uses (retry + first-byte watchdog). The
    * `MODEL_ERROR` is scoped to THIS worker's session id (`ctx.workerId`) so a
    * client attributes a retry/failure to the worker, not the parent. The
-   * watchdog allowance is driven by the §4.8 ratio-based estimate of the
-   * request's input tokens (counted at the fallback 4 chars/token here). */
+   * watchdog allowance is the flat first-byte allowance (networkModelTimeout);
+   * no per-token slope or cap. */
   private workerNetworkMiddleware(def: AgentDefinition, ctx: { workerId: string; worker?: string }) {
     const modelName = def.model ?? this.deps.getConfig().modelSelected ?? "(worker)";
     return createModelNetworkMiddleware({
@@ -1125,8 +1149,6 @@ export class Subagents {
       sessionId: ctx.workerId,
       getMaxRetries: () => this.deps.getConfig().networkModelMaxRetries,
       getFloorMs: () => this.deps.getConfig().networkModelTimeout,
-      estimateInputTokens: (messages) =>
-        Math.ceil(messages.reduce((n, m) => n + workerMessageChars(m), 0) / CHARS_PER_TOKEN),
       mask: maskText,
     });
   }
@@ -1714,6 +1736,29 @@ export class Subagents {
       tools: [],
       limitReached: false,
       lastText: "",
+      maxInputTokens: 0,
+      pendingContextNote: null,
+      contextNoteEmitted: false,
+    };
+    // §7.2 — the elapsed clock starts HERE, when the worker RUNS (invokeAgent is
+    // called only after acquire()), so a queued task counts no time while it
+    // waits. The watchdog and retries likewise start on the first model call.
+    const startedAt = Date.now();
+    // §3.3/§7.2 — lead every worker result with the structured two-way end
+    // report, so the orchestrator is told what happened on EVERY ending; unless
+    // `completed`, the gathered-so-far summary follows (what it answered and what
+    // it did not). One helper so every return path shapes it identically.
+    const report = (ended: WorkerEnding, body: string): string => {
+      const rc = roundState.counter;
+      const line = workerEndReport({
+        ended,
+        rounds: rc.count,
+        roundLimit: rc.max,
+        usedTokens: roundState.maxInputTokens,
+        windowTokens: this.deps.window,
+        elapsedMs: Date.now() - startedAt,
+      });
+      return body.trim() !== "" ? `${line}\n${body}` : line;
     };
     try {
       // §3.8 — a per-dispatch result schema makes the worker run with a
@@ -1743,27 +1788,37 @@ export class Subagents {
       if (roundState.limitReached) {
         const rc = roundState.counter;
         const text = this.lastText(invokeResult.messages ?? []) || roundState.lastText;
-        const summary = text.trim() !== "" ? text : limitSummary(rc.count, rc.max, roundState.tools);
-        return { ok: true, status: "limit_reached", summary };
+        const body = text.trim() !== "" ? text : limitSummary(rc.count, rc.max, roundState.tools);
+        return { ok: true, status: "limit_reached", summary: report("rounds", body) };
       }
       // §3.8 — a valid typed result is JSON-serialized as the summary that
       // converges to the orchestrator; otherwise the worker's final text.
       if (validated?.ok) {
         const check = validateStructuredValue(validated.value, invokeResult.structuredResponse);
-        if (check.ok) return { ok: true, summary: JSON.stringify(check.value) };
+        if (check.ok) return { ok: true, summary: report("completed", JSON.stringify(check.value)) };
       }
       const summary = this.lastText(invokeResult.messages ?? []);
-      return { ok: true, summary };
+      return { ok: true, summary: report("completed", summary) };
     } catch (e) {
-      if (signal.aborted) return { ok: false, summary: "aborted" };
-      // §4.10 / invariant 9 — the shared overflow guard refused this worker's
-      // request (the model was never called). Fail with the reason so the
-      // orchestrator sees CONTEXT_OVERFLOW, not a generic worker error.
+      if (signal.aborted) return { ok: false, summary: report("cancelled", "cancelled") };
+      // §4.10 / invariant 9 / P4 — the shared overflow guard refused this
+      // worker's request (the context hard stop). It ends as a `limit_reached`
+      // ending that CARRIES what it gathered, never an empty failure: the
+      // orchestrator reads it like any limit and re-dispatches a narrower brief.
       const overflow = contextOverflowOf(e);
+      const gathered =
+        roundState.lastText.trim() !== ""
+          ? roundState.lastText
+          : limitSummary(roundState.counter.count, roundState.counter.max, roundState.tools);
       if (overflow) {
-        return { ok: false, summary: `CONTEXT_OVERFLOW: ${overflow.message} (estimate ${overflow.estimatedInput} + maxOutput ${overflow.maxOutputTokens} > limit ${overflow.limit})` };
+        return { ok: true, status: "limit_reached", summary: report("context", gathered) };
       }
-      return { ok: false, summary: `worker error: ${String(e)}` };
+      // P4 — a model error or a timeout after retries returns what it gathered
+      // rather than failing empty; the leading report tells the ending apart
+      // (`timeout` for the first-byte watchdog, else `error`).
+      const ended: WorkerEnding = endedOnFirstByteTimeout(e) ? "timeout" : "error";
+      const body = `${gathered}\nworker ${ended}: ${String(e)}`;
+      return { ok: false, summary: report(ended, body) };
     }
   }
 

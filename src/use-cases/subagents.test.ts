@@ -285,6 +285,16 @@ describe("Subagents — fan-out, worktrees, verification (§7.2, §7.3, §7.5)",
     expect(typeof result.workers[0]!.summary).toBe("string");
   });
 
+  it("a completed worker's summary LEADS with the structured end report (§3.3/§7.2)", async () => {
+    const result = await sa.dispatch([{ agent: "coder", task: "task" }]);
+    expect(result.workers[0]!.status).toBe("merged");
+    // The first line is the two-way end report naming the `completed` ending,
+    // the rounds used/limit, the context pct (used/window), and elapsed seconds.
+    expect(result.workers[0]!.summary).toMatch(
+      /^\[worker report: ended=completed rounds=\d+\/\d+ context=\d+% \(\d+\/\d+\) elapsed=\d+s\]/,
+    );
+  });
+
   it("a merge conflict preserves work on voidrift-recovery-{id}", async () => {
     const result = await sa.dispatch([{ agent: "coder", task: "task" }]);
     const id = result.workers[0]!.worktree!.split("/").pop()!;
@@ -817,11 +827,14 @@ describe("Subagents — the shared CONTEXT_OVERFLOW guard on worker calls (§4.1
     sa.register({ ...codeAgent, model: workerModelKey });
     const longTask = "do this ".repeat(500); // ~4000 chars → way over a 50-token window
     const result = await sa.dispatch([{ agent: "coder", task: longTask }]);
-    // The worker FAILED with the overflow reason and the model was never called.
-    expect(result.workers[0]!.status).toBe("failed");
-    expect(result.workers[0]!.summary).toMatch(/CONTEXT_OVERFLOW/);
+    // P4 — the context hard stop ends the worker as a `limit_reached`-style
+    // ending that CARRIES what it gathered (never an empty failure), and the
+    // model was never called. The result leads with the structured end report
+    // naming the `context` ending.
+    expect(result.workers[0]!.status).toBe("limit_reached");
+    expect(result.workers[0]!.summary).toContain("[worker report: ended=context");
     expect(never.invoked).toBe(false);
-    // CONTEXT_OVERFLOW was emitted with the typed payload (§4.10).
+    // CONTEXT_OVERFLOW was still emitted with the typed payload (§4.10).
     expect(overflows.length).toBeGreaterThanOrEqual(1);
     expect(overflows[0]).toMatchObject({ maxOutputTokens: 40, limit: 50 });
   });

@@ -54,9 +54,15 @@ Put what the worker needs in `task` and `context`: the facts it needs, the proje
 
 ## Worker budget and the limit
 
-A worker has the same tool-round budget as you, stated in its meta block. At 80% of its rounds it gets a wrap-up note. A worker that runs out returns status `limit_reached` with what it found so far; the result is never empty.
+A worker has the same tool-round budget as you, stated in its meta block. At 80% of its rounds, and again at 80% of its context window, it gets a wrap-up note. A worker that runs out returns status `limit_reached` with what it found so far; the result is never empty.
 
 When a worker returns `limit_reached`, re-dispatch only the unanswered part: send a new task with the remaining question and the findings so far in `context`. Do not ask again what was already answered.
+
+## Reading a worker's report
+
+Every worker result starts with a report line: `[worker report: ended=<completed|rounds|context|timeout|error|cancelled> rounds=<used>/<limit> context=<percent>% (<used>/<window>) elapsed=<seconds>s]`. The text below it is what the worker gathered.
+
+When `ended` is anything but `completed`, your brief was too broad for one worker, or its reads were too wide. Split the work by question, re-dispatch only what is still unanswered with the findings so far in `context`, and ask for narrower reads when `context` is high. Do not repeat a brief that just failed.
 
 ## What you get back
 

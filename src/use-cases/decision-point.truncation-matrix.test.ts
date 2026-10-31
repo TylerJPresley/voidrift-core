@@ -32,9 +32,9 @@ import { Warden } from "../entities/warden.js";
 import { ConfigSchema, type Config } from "../config/schema.js";
 import { estimateTokens } from "../entities/context/budget.js";
 
-/** A 4k window: 10% ⇒ ~400-token (~1600-char) eviction threshold. */
+/** A 4k window: fitFraction 0.4 ⇒ ~1600-token (~6400-char) eviction threshold. */
 function cfg(over: Partial<Config> = {}): Config {
-  return ConfigSchema.parse({ contextToolResultPct: 10, ...over });
+  return ConfigSchema.parse({ ...over });
 }
 
 const ctx: CallerContext = { sessionId: "sess1234", approvalMode: "interactive" };

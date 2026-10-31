@@ -7,8 +7,9 @@
  * `ChatGoogleGenerativeAI`. A missing/unknown selected entry surfaces at the
  * first turn as `MODEL_NOT_CONFIGURED` (§3.3); the window must be known or
  * resolution fails with `ENDPOINT_WINDOW_UNKNOWN` (§4.8). One harness first-byte
- * watchdog and retry across providers (§11.5); the client constructor timeout is
- * the watchdog's 5× cap so the SDK timeout never fires before the watchdog.
+ * watchdog and retry across providers (§11.5); the client constructor timeout
+ * equals networkModelTimeout (the flat first-byte allowance) so the SDK timeout
+ * never fires before the watchdog.
  *
  * This adapter is the one place the use-case layer's model seam touches a
  * provider SDK. Tests inject a `fakeModel()` through the factory seam instead.
@@ -20,7 +21,6 @@ import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import type { ModelInfo, ModelPort, ResolvedModel } from "../entities/ports/model-port.js";
 import type { Config, ModelConfigEntry } from "../config/schema.js";
 import { CoreErrorException, coreError, ErrorCode } from "../entities/errors.js";
-import { WATCHDOG_CAP_MULTIPLE } from "../entities/model-error.js";
 import { bundledCountTokens, type CountTokensFn } from "./count-tokens.js";
 
 /** A factory that builds a chat model from a resolved entry — the provider seam (§11.7). */
@@ -171,10 +171,10 @@ export class ModelProviderAdapter implements ModelPort {
     // applies. A bundled protocol is reserved, so `providers` never holds one.
     const provider = this.providers.get(resolved.protocol);
     const network: NetworkSettings = {
-      // §11.5 — the client constructor timeout is the watchdog's 5× cap (the
-      // ceiling of the first-byte allowance) so the provider SDK's own timeout
-      // never fires before the harness watchdog, which owns the first-byte bound.
-      timeout: this.getConfig().networkModelTimeout * WATCHDOG_CAP_MULTIPLE,
+      // §11.5 — the client constructor timeout equals `networkModelTimeout`, the
+      // same flat first-byte allowance the harness watchdog owns, so the SDK's
+      // own timeout never fires before it.
+      timeout: this.getConfig().networkModelTimeout,
       maxRetries: this.getConfig().networkModelMaxRetries,
     };
     // The default factory receives the uniform network settings (§11.5); an
@@ -201,10 +201,10 @@ export class ModelProviderAdapter implements ModelPort {
     const entry = this.entry(resolved.name)!;
     const provider = this.providers.get(resolved.protocol);
     const network: NetworkSettings = {
-      // §11.5 — the client constructor timeout is the watchdog's 5× cap (the
-      // ceiling of the first-byte allowance) so the provider SDK's own timeout
-      // never fires before the harness watchdog, which owns the first-byte bound.
-      timeout: this.getConfig().networkModelTimeout * WATCHDOG_CAP_MULTIPLE,
+      // §11.5 — the client constructor timeout equals `networkModelTimeout`, the
+      // same flat first-byte allowance the harness watchdog owns, so the SDK's
+      // own timeout never fires before it.
+      timeout: this.getConfig().networkModelTimeout,
       maxRetries: this.getConfig().networkModelMaxRetries,
     };
     return provider
@@ -259,10 +259,10 @@ export class ModelProviderAdapter implements ModelPort {
     };
     const provider = this.providers.get(resolved.protocol);
     const network: NetworkSettings = {
-      // §11.5 — the client constructor timeout is the watchdog's 5× cap (the
-      // ceiling of the first-byte allowance) so the provider SDK's own timeout
-      // never fires before the harness watchdog, which owns the first-byte bound.
-      timeout: this.getConfig().networkModelTimeout * WATCHDOG_CAP_MULTIPLE,
+      // §11.5 — the client constructor timeout equals `networkModelTimeout`, the
+      // same flat first-byte allowance the harness watchdog owns, so the SDK's
+      // own timeout never fires before it.
+      timeout: this.getConfig().networkModelTimeout,
       maxRetries: this.getConfig().networkModelMaxRetries,
     };
     return provider

@@ -546,8 +546,8 @@ describe("Worker gate — reviewer, events, masking, eviction (§7.5, §8.3, §1
     const sa = new Subagents(
       baseDeps({
         vcs,
-        window: 2000, // small window so the read evicts
-        getConfig: () => cfg({ contextToolResultPct: 1 }),
+        window: 2000, // small window so the read does not fit → evicts (fit test)
+        getConfig: () => cfg(),
         getOwnerSessionId: () => "parent-sess",
         writeEvictedResult: async (sessionId, _name, body) => {
           writes.push({ sessionId, body });

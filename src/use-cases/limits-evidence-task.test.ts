@@ -5,8 +5,8 @@
  *     yields NO draft (null) + one hit — background work never breaks.
  *   - the TASK BRIEF (`task.briefMaxChars`) in `buildTaskTool` (tools/task-tool):
  *     deny refuses the task call BEFORE dispatch with the normal tool error.
- *   - the BATCH RESULT (`task.batchResultMaxChars`) in `renderBatch`: warn marks
- *     visibly + one hit; deny fails the stage and does not deliver the content.
+ *   - the BATCH RESULT in `renderBatch`: carried WHOLE (no per-worker cap, P2);
+ *     the §8.3 fit test decides whole-vs-pointer at the decision point.
  *   - the DEPENDENCY SUMMARY (`task.depSummaryMaxChars`) in `Subagents.dispatch`:
  *     deny fails the dependent stage; the oversize summary is not delivered.
  *
@@ -185,29 +185,11 @@ describe("§13.11 task brief (task.briefMaxChars) — buildTaskTool", () => {
   });
 });
 
-describe("§13.11 batch result (task.batchResultMaxChars) — renderBatch via buildTaskTool", () => {
-  it("warn: the batch result is clipped with a marker naming the key, exactly one hit", async () => {
+describe("§7.2 batch result — carried whole, the §8.3 fit test decides (P2, no per-worker cap)", () => {
+  it("a large worker result is carried whole with no clip marker and no batch-result hit", async () => {
     const bus = new EventBus();
     const hits = captureHits(bus);
-    const limits = limitsFor(bus, { task: { batchResultMaxChars: { value: 30, action: "warn" } } });
-    const dispatch = vi.fn(async (): Promise<FanoutResult> => ({
-      fanoutId: "f",
-      workers: [{ ...worker("R".repeat(300)), taskId: "a" }],
-    }));
-    const tool = buildTaskTool({ workers: workerList, dispatch, limits });
-    const res = (await tool.invoke(
-      { tasks: [{ id: "a", worker: "reader", task: "do a" }] },
-      { toolCall: { id: "c4" } } as never,
-    )) as { content: string };
-    expect(res.content).toContain("[truncated at limits.task.batchResultMaxChars");
-    expect(hits).toHaveLength(1);
-    expect(hits[0]!.action).toBe("warn");
-  });
-
-  it("deny: the stage fails and the oversize content is NOT delivered, exactly one hit", async () => {
-    const bus = new EventBus();
-    const hits = captureHits(bus);
-    const limits = limitsFor(bus, { task: { batchResultMaxChars: { value: 30, action: "deny" } } });
+    const limits = limitsFor(bus, {});
     const big = "R".repeat(300);
     const dispatch = vi.fn(async (): Promise<FanoutResult> => ({
       fanoutId: "f",
@@ -216,32 +198,11 @@ describe("§13.11 batch result (task.batchResultMaxChars) — renderBatch via bu
     const tool = buildTaskTool({ workers: workerList, dispatch, limits });
     const res = (await tool.invoke(
       { tasks: [{ id: "a", worker: "reader", task: "do a" }] },
-      { toolCall: { id: "c5" } } as never,
-    )) as { content: string; status?: string };
-    expect(res.status).toBe("error");
-    expect(res.content).toContain("limits.task.batchResultMaxChars");
-    expect(res.content).not.toContain(big); // oversize content not delivered
-    expect(hits).toHaveLength(1);
-    expect(hits[0]!.action).toBe("deny");
-  });
-
-  it("m1 (mutation): two oversize rows for the SAME key emit ONE LIMIT_HIT (per-turn dedup)", async () => {
-    const bus = new EventBus();
-    const hits = captureHits(bus);
-    const limits = limitsFor(bus, { task: { batchResultMaxChars: { value: 30, action: "warn" } } });
-    const dispatch = vi.fn(async (): Promise<FanoutResult> => ({
-      fanoutId: "f",
-      workers: [
-        { ...worker("A".repeat(300)), taskId: "a" },
-        { ...worker("B".repeat(300)), taskId: "b" },
-      ],
-    }));
-    const tool = buildTaskTool({ workers: workerList, dispatch, limits });
-    await tool.invoke(
-      { tasks: [{ id: "a", worker: "reader", task: "do a" }, { id: "b", worker: "reader", task: "do b" }] },
-      { toolCall: { id: "c6" } } as never,
-    );
-    expect(hits).toHaveLength(1); // m1 breaks this if a site emits twice
+      { toolCall: { id: "c4" } } as never,
+    )) as { content: string };
+    expect(res.content).toContain(big);
+    expect(res.content).not.toContain("[truncated at");
+    expect(hits.filter((h) => h.key === "task.batchResultMaxChars")).toHaveLength(0);
   });
 });
 

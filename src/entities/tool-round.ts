@@ -75,6 +75,37 @@ export function limitSummary(rounds: number, max: number, tools: readonly string
   );
 }
 
+/** The one 80%-of-context wrap-up note a worker gets (§3.3, §7.2), in ADDITION
+ * to the 80%-of-rounds note, so it produces a partial answer before the context
+ * hard stop. `pct` is the worker's context occupancy of its window. */
+export function contextBudgetNote(pct: number): string {
+  return `Context budget nearly used (~${pct}% of the window). Answer now with what you have, or delegate the rest.`;
+}
+
+/** The possible endings of a dispatched worker (§3.3, §7.2). */
+export type WorkerEnding = "completed" | "rounds" | "context" | "timeout" | "error" | "cancelled";
+
+/** The structured two-way end report that LEADS every worker result (§3.3,
+ * §7.2): `[worker report: ended=<end> rounds=<used>/<limit> context=<pct>%
+ * (<used>/<window>) elapsed=<seconds>s]`. The orchestrator reads it on every
+ * ending to know what happened to the work it dispatched: an `ended` other than
+ * `completed` means the brief was too broad (split by question, re-dispatch only
+ * the unanswered part), and a high `context` percentage means narrow the reads
+ * (§12.8). PURE. `windowTokens` of 0 reports `context=0% (used/0)` without
+ * dividing by zero. */
+export function workerEndReport(r: {
+  ended: WorkerEnding;
+  rounds: number;
+  roundLimit: number;
+  usedTokens: number;
+  windowTokens: number;
+  elapsedMs: number;
+}): string {
+  const pct = r.windowTokens > 0 ? Math.round((r.usedTokens / r.windowTokens) * 100) : 0;
+  const seconds = Math.round(r.elapsedMs / 1000);
+  return `[worker report: ended=${r.ended} rounds=${r.rounds}/${r.roundLimit} context=${pct}% (${r.usedTokens}/${r.windowTokens}) elapsed=${seconds}s]`;
+}
+
 /**
  * The per-turn tool-round counter (§3.3). Counts model→tools rounds, emits the
  * one 80% note (once per turn), and reports when the limit is reached. Reset at

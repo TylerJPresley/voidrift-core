@@ -535,7 +535,7 @@ export const ConfigSchema = z
     // unset falls back to `modelSelected` at the call site.
     modelUtility: z.string().optional(),
 
-    networkModelTimeout: z.number().int().positive().default(120_000),
+    networkModelTimeout: z.number().int().positive().default(600_000),
     networkModelMaxRetries: z.number().int().nonnegative().default(3),
 
     // §3.6 — an explicit override of the LangGraph recursion ceiling. UNSET it
@@ -560,7 +560,7 @@ export const ConfigSchema = z
     // The engine counts rounds and derives LangGraph's recursionLimit from this
     // (2*rounds+5) when `turnRecursionLimit` is unset; reaching it ends the turn
     // `limit_reached` with a result always carried (§3.3).
-    turnMaxToolRounds: z.number().int().positive().default(15),
+    turnMaxToolRounds: z.number().int().positive().default(25),
     turnShutdownGraceMs: z.number().int().nonnegative().default(5_000),
     turnLoopMaxConsecutiveErrors: z.number().int().positive().default(3),
     turnLoopMaxIdenticalCalls: z.number().int().positive().default(4),
@@ -580,7 +580,6 @@ export const ConfigSchema = z
     // default is the free, keyless `duckduckgo` so search works out of the box.
     webSearch: WebSearchSchema.default({ provider: "duckduckgo" }),
 
-    contextToolResultPct: z.number().int().min(1).max(100).default(10),
     toolsTrimHeadLines: z.number().int().nonnegative().default(30),
     toolsTrimTailLines: z.number().int().nonnegative().default(20),
 

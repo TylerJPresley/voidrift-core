@@ -17,24 +17,33 @@
  */
 import { contentHash } from "./hash.js";
 import { estimateTokens } from "./context/budget.js";
-import { limitDefault } from "./limits.js";
 
-/** The eviction threshold in tokens: `pct` percent of the endpoint window (§8.3, §4.8). */
-export function evictionThresholdTokens(window: number, pct: number): number {
-  return Math.floor((window * pct) / 100);
+/** The eviction fit threshold in tokens: `fitFraction` of the live available
+ * budget (§8.3, §8.7, §4.8). A result within this many tokens fits whole; a
+ * larger one is evicted. `availableBudget` is `window − used − output
+ * reservation` (`ContextPipeline.availableBudget`). */
+export function evictionThresholdTokens(availableBudget: number, fitFraction: number): number {
+  return Math.floor(availableBudget * fitFraction);
 }
 
 /**
- * Whether a tool result is large enough to evict (§8.3). `true` when its token
- * count (the §4.8 last-resort counter) exceeds `pct`% of the endpoint window —
- * so a 16k local window evicts far earlier than a 200k hosted one. A result at
- * or below the threshold is left untouched (zero behavior change for normal
- * use).
+ * Whether a tool result is large enough to evict (§8.3). One delivery rule for
+ * every path: a result is delivered WHOLE when it fits the remaining window —
+ * the same fit test every other load uses, `limits.ingest.fitFraction` of the
+ * live available budget (§4.8, §8.7) — and `true` (evict) only when its token
+ * count (the §4.8 last-resort counter) does NOT fit. The test runs on the live
+ * available budget (`window − used − output reservation`), so the threshold
+ * tracks real headroom: a small local window evicts far earlier than a large
+ * hosted one, and small output on a model with room is never evicted.
  */
-export function shouldEvict(content: string, opts: { window: number; pct: number }): boolean {
-  const threshold = evictionThresholdTokens(opts.window, opts.pct);
-  if (threshold <= 0) return false;
-  return estimateTokens(content) > threshold;
+export function shouldEvict(content: string, opts: { availableBudget: number; fitFraction: number }): boolean {
+  const tokens = estimateTokens(content);
+  const threshold = evictionThresholdTokens(opts.availableBudget, opts.fitFraction);
+  // No headroom (budget or fraction non-positive): anything non-trivial cannot
+  // fit, so it MUST evict — the opposite of a share-of-the-window cap, which
+  // never evicted when the window was exhausted (the overflow that followed).
+  if (threshold <= 0) return tokens > 0;
+  return tokens > threshold;
 }
 
 /**
@@ -74,23 +83,27 @@ export interface Eviction {
   artifact: EvictionArtifact;
 }
 
+/** The INTERNAL per-excerpt-line character cap (§8.3). Not a config key — the
+ * former `context.excerptLineMaxChars` key was removed (one delivery rule, P2) —
+ * but the HANDLE itself must stay bounded, so a single enormous line (a 300k
+ * `tr`-filled command output with no newlines) is still clipped in the excerpt
+ * while the FULL body is cached off-model. Derived constant, never configurable. */
+const EXCERPT_LINE_MAX_CHARS = 2000;
+
 /** Trim a body to its first `head` and last `tail` lines, joined by an elision
- * note (§8.3). Each excerpt line is additionally capped at `lineMax`
- * (`context.excerptLineMaxChars`, §13.11/CTX12) so the handle stays bounded even
- * when the body is a single huge line. When the body already fits (few short
+ * note (§8.3). Each excerpt line is clipped at the internal `EXCERPT_LINE_MAX_CHARS`
+ * so the handle stays bounded even when the body is one enormous line; the FULL
+ * body is cached off-model regardless. When the body already fits (few short
  * lines), it is returned whole. */
-function headTail(body: string, head: number, tail: number, lineMax: number, onLineTruncated?: () => void): string {
-  const cap = (line: string): string => {
-    if (line.length <= lineMax) return line;
-    onLineTruncated?.();
-    return `${line.slice(0, lineMax)}… [${line.length - lineMax} more chars on this line]`;
-  };
+function headTail(body: string, head: number, tail: number): string {
+  const cap = (line: string): string =>
+    line.length <= EXCERPT_LINE_MAX_CHARS
+      ? line
+      : `${line.slice(0, EXCERPT_LINE_MAX_CHARS)}… [${line.length - EXCERPT_LINE_MAX_CHARS} more chars on this line]`;
   const lines = body.split("\n");
   if (lines.length <= head + tail) {
-    // Few lines, but any single line may still be enormous — cap each.
     const capped = lines.map(cap);
-    if (capped.every((l, i) => l === lines[i])) return body;
-    return capped.join("\n");
+    return capped.every((l, i) => l === lines[i]) ? body : capped.join("\n");
   }
   const omitted = lines.length - head - tail;
   const top = lines.slice(0, head).map(cap);
@@ -113,18 +126,12 @@ export function evict(
     headLines: number;
     tailLines: number;
     mask: (s: string) => string;
-    /** §13.11/CTX12 — per-excerpt-line cap. Defaults to the registry default. */
-    excerptLineMaxChars?: number;
-    /** §13.11 — invoked (at least once) when a line was truncated at the
-     * `context.excerptLineMaxChars` cap, so the caller emits ONE `LIMIT_HIT`
-     * naming the key (the entity stays pure — no port here). */
-    onLineTruncated?: () => void;
   },
 ): Eviction {
   const maskedBody = opts.mask(content);
   const name = evictionCacheName(maskedBody);
   const relPath = evictionCachePath(opts.sessionId, name);
-  const excerpt = headTail(maskedBody, opts.headLines, opts.tailLines, opts.excerptLineMaxChars ?? limitDefault("context.excerptLineMaxChars"), opts.onLineTruncated);
+  const excerpt = headTail(maskedBody, opts.headLines, opts.tailLines);
   const size = Buffer.byteLength(maskedBody, "utf8");
   const tokens = estimateTokens(maskedBody);
   const handle = [
@@ -156,23 +163,19 @@ export function applyResultPolicy(
   content: string,
   opts: {
     sessionId: string;
-    window: number;
-    pct: number;
+    availableBudget: number;
+    fitFraction: number;
     headLines: number;
     tailLines: number;
     mask: (s: string) => string;
-    excerptLineMaxChars?: number;
-    onLineTruncated?: () => void;
   },
 ): Eviction | null {
-  if (!shouldEvict(content, { window: opts.window, pct: opts.pct })) return null;
+  if (!shouldEvict(content, { availableBudget: opts.availableBudget, fitFraction: opts.fitFraction })) return null;
   return evict(content, {
     sessionId: opts.sessionId,
     headLines: opts.headLines,
     tailLines: opts.tailLines,
     mask: opts.mask,
-    ...(opts.onLineTruncated ? { onLineTruncated: opts.onLineTruncated } : {}),
-    ...(opts.excerptLineMaxChars !== undefined ? { excerptLineMaxChars: opts.excerptLineMaxChars } : {}),
   });
 }
 

@@ -5,22 +5,19 @@
  * EXACTLY ONE `LIMIT_HIT` naming the canonical key, and checks the marker/notice
  * names that same key.
  *
- * Covered keys: `context.excerptLineMaxChars` (warn, tool-eviction excerpt line),
- * `tools.workspaceFileMaxBytes` (warn, workspace-surface skip),
+ * Covered keys: `tools.workspaceFileMaxBytes` (warn, workspace-surface skip),
  * `tools.responseSchemaMaxBytes` (deny, §3.8 schema size bound).
  *
- * Mutation-proof (two) with explicit test names below: a mutant that DROPS the
- * excerpt-line hit, and one that emits the workspace-file hit TWICE, both fail.
+ * Mutation-proof with an explicit test name below: a mutant that emits the
+ * workspace-file hit TWICE fails.
  */
 import { describe, it, expect } from "vitest";
 import { EventBus } from "../entities/event-bus.js";
 import { resolveLimits, type LimitLayerInput } from "../entities/limits-resolve.js";
 import { LimitsCapability } from "./limits-capability.js";
-import { applyResultPolicy } from "../entities/tool-eviction.js";
 import { WorkspaceSurfaceImpl } from "./workspace-surface.js";
 import { InMemoryFileSystem } from "../adapters/in-memory-filesystem.js";
 import { validateResponseSchema } from "../entities/structured-output.js";
-import { maskText } from "./secret-mask.js";
 
 function setup(layers: LimitLayerInput[] = []) {
   const bus = new EventBus();
@@ -29,43 +26,6 @@ function setup(layers: LimitLayerInput[] = []) {
   const limits = new LimitsCapability(resolveLimits(layers), bus, { session: "s1" });
   return { bus, hits, limits };
 }
-
-describe("context.excerptLineMaxChars — warn: excerpt line cut emits ONE hit (§13.11)", () => {
-  it("a single huge excerpt line is truncated and fires exactly one hit naming the key", () => {
-    const { hits, limits } = setup([{ layer: "project", limits: { context: { excerptLineMaxChars: 20 } } }]);
-    const huge = "x".repeat(50_000); // one enormous line → forced to evict and cap
-    const e = applyResultPolicy(huge, {
-      sessionId: "s1",
-      window: 1_000,
-      pct: 10,
-      headLines: 2,
-      tailLines: 2,
-      mask: maskText,
-      excerptLineMaxChars: limits.get("context.excerptLineMaxChars"),
-      onLineTruncated: () => limits.hit("context.excerptLineMaxChars", undefined, { session: "s1", what: "tool-result excerpt line truncated" }),
-    });
-    expect(e).not.toBeNull();
-    expect(e!.handle).toContain("more chars on this line");
-    const k = hits.filter((h) => h.key === "context.excerptLineMaxChars");
-    expect(k).toHaveLength(1);
-  });
-
-  it("mutation-proof (drop-the-hit): without onLineTruncated wired, no hit is recorded", () => {
-    const { hits, limits } = setup([{ layer: "project", limits: { context: { excerptLineMaxChars: 20 } } }]);
-    const huge = "x".repeat(50_000);
-    applyResultPolicy(huge, {
-      sessionId: "s1",
-      window: 1_000,
-      pct: 10,
-      headLines: 2,
-      tailLines: 2,
-      mask: maskText,
-      excerptLineMaxChars: limits.get("context.excerptLineMaxChars"),
-      // onLineTruncated intentionally omitted: proves the hit comes from the wiring.
-    });
-    expect(hits.filter((h) => h.key === "context.excerptLineMaxChars")).toHaveLength(0);
-  });
-});
 
 describe("tools.workspaceFileMaxBytes — warn: over-cap file skipped with ONE hit (§13.11)", () => {
   function seed(fs: InMemoryFileSystem, path: string, content: string): void {

@@ -27,15 +27,15 @@ import { estimateTokens } from "../entities/context/budget.js";
 import { maskText } from "./secret-mask.js";
 
 const WINDOW = 32_000;
-const PCT = 10; // contextToolResultPct default ⇒ ~3200-token per-result threshold
+const FIT = 0.4; // ingest.fitFraction default ⇒ ~12.8k-token fit threshold
 
 /** Apply the ONE gate and return what ACTUALLY enters the chain: the bounded
  * handle when evicted, else the result unchanged — plus whether it evicted. */
 function throughGate(content: string): { entered: string; evicted: boolean } {
   const e = applyResultPolicy(content, {
     sessionId: "s",
-    window: WINDOW,
-    pct: PCT,
+    availableBudget: WINDOW,
+    fitFraction: FIT,
     headLines: 30,
     tailLines: 20,
     mask: maskText,
@@ -61,11 +61,13 @@ describe("§8.3 metering — tool-result growth is measured at production", () =
   });
 
   it("an OVERSIZED result is caught at production — the bounded handle enters, never the whole body", () => {
-    const huge = "H".repeat(400_000); // ~100k tokens, 3× the window
+    // Many lines (~100k tokens, 3× the window); the head/tail excerpt bounds the
+    // handle while the full body is cached off-model.
+    const huge = Array.from({ length: 20_000 }, (_, i) => `line ${i} ${"H".repeat(16)}`).join("\n");
     const { entered, evicted } = throughGate(huge);
     expect(evicted).toBe(true);
-    // What enters the chain is bounded (< the per-result threshold), not 100k tokens.
-    expect(estimateTokens(entered)).toBeLessThan((PCT * WINDOW) / 100);
+    // What enters the chain is bounded (< the fit threshold), not 100k tokens.
+    expect(estimateTokens(entered)).toBeLessThan(FIT * WINDOW);
     expect(entered).toContain("evicted");
   });
 
@@ -90,13 +92,15 @@ describe("§8.3 metering — tool-result growth is measured at production", () =
   });
 
   it("every result oversized: each is evicted at production, so no SINGLE result ever carries a full body into the chain", () => {
-    const big = "B".repeat(20_000); // each ~5000 tokens, over the ~3200 threshold
+    // Many lines, ~15000 tokens each, over the ~12.8k fit threshold; the
+    // head/tail excerpt bounds each handle.
+    const big = Array.from({ length: 3_000 }, (_, i) => `row ${i} ${"B".repeat(16)}`).join("\n");
     for (let i = 0; i < 200; i++) {
       const { entered, evicted } = throughGate(big);
       expect(evicted).toBe(true);
-      // Each handle is individually bounded under the per-result threshold —
-      // the 5000-token body never rides inline on any path.
-      expect(estimateTokens(entered)).toBeLessThan((PCT * WINDOW) / 100);
+      // Each handle is individually bounded under the fit threshold — the
+      // ~15000-token body never rides inline on any path.
+      expect(estimateTokens(entered)).toBeLessThan(FIT * WINDOW);
     }
   });
 });

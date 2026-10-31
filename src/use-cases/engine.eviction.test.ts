@@ -18,7 +18,9 @@ import type { ResolvedModel } from "../entities/ports/model-port.js";
 import type { ModelConfigEntry } from "../config/schema.js";
 import { seededPermissionsRecord } from "../test-support/seed-rules.js";
 
-/** A 16k window: 10% ⇒ ~1600-token (~6400-char) eviction threshold. */
+/** A 16k window: fitFraction 0.4 of the available budget ⇒ a ~5–6k-token
+ * eviction threshold, so a ~40k-char (~10k-token) result evicts and a tiny one
+ * does not. */
 const seed = {
   models: { t: { model: "t", protocol: "openai", contextLimit: 16_000 } },
   modelSelected: "t",
@@ -147,12 +149,11 @@ describe("§8.3 — large-result eviction in the engine tool-call path", () => {
     //
     // This case checks the turn's RETURNED `toolsUsed`, so the turn must run to
     // completion — unlike the eviction/cache cases above, which assert only the
-    // off-model artifact. A window large enough that the evicted result's handle
-    // still fits the follow-up model call (the 4k window the other cases use
-    // overflows AFTER eviction and ends the turn `failed` with empty toolsUsed);
-    // 10% of 64k ⇒ a ~6400-token (~25.6k-char) eviction threshold, so the 40k
-    // single-line result still evicts while the handled turn completes.
-    const bigSeed = { ...seed, models: { t: { model: "t", protocol: "openai", contextLimit: 64_000 } } };
+    // off-model artifact. The window is chosen so the 40k single-line result
+    // does NOT fit the available budget (the `limits.ingest.fitFraction` fit
+    // test, 0.4 of ~16k available ⇒ a ~6400-token threshold < the result's ~10k
+    // tokens, so it evicts) while the small handle still fits the follow-up call.
+    const bigSeed = { ...seed, models: { t: { model: "t", protocol: "openai", contextLimit: 16_000 } } };
     const big = "Y".repeat(40_000);
     await fs.writeFile(path.join(ws, "huge.txt"), big);
     const script = () =>
@@ -174,18 +175,15 @@ describe("§8.3 — large-result eviction in the engine tool-call path", () => {
     }
   });
 
-  it("rejects a nonsense contextToolResultPct (0 and >100) and cascades the trim keys", async () => {
+  it("the per-result eviction cap (contextToolResultPct) is GONE — one delivery rule via ingest.fitFraction (§8.3/§8.7)", async () => {
     const { ConfigSchema } = await import("../config/schema.js");
-    // 0 and >100 are rejected at the schema boundary (§8.3: a share of a window).
-    expect(ConfigSchema.safeParse({ ...seed, contextToolResultPct: 0 }).success).toBe(false);
-    expect(ConfigSchema.safeParse({ ...seed, contextToolResultPct: 150 }).success).toBe(false);
-    // Valid bounds and the defaults for the trim keys resolve.
-    const ok = ConfigSchema.parse({ ...seed, contextToolResultPct: 25 });
-    expect(ok.contextToolResultPct).toBe(25);
+    // The former per-result share cap is removed: the key is now unknown and
+    // rejected by the strict schema; eviction is the one fit test
+    // (`limits.ingest.fitFraction` of the available budget), not a separate key.
+    expect(ConfigSchema.safeParse({ ...seed, contextToolResultPct: 10 }).success).toBe(false);
+    // The trim keys that shape the eviction handle still resolve to their defaults.
+    const ok = ConfigSchema.parse({ ...seed });
     expect(ok.toolsTrimHeadLines).toBe(30);
     expect(ok.toolsTrimTailLines).toBe(20);
-    // Cascade: a narrower (session) layer overrides the broader value.
-    const narrower = ConfigSchema.partial().parse({ contextToolResultPct: 5 });
-    expect(narrower.contextToolResultPct).toBe(5);
   });
 });

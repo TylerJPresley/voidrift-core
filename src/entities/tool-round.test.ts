@@ -10,6 +10,8 @@ import {
   limitNotice,
   limitSummary,
   ToolRoundCounter,
+  contextBudgetNote,
+  workerEndReport,
 } from "./tool-round.js";
 
 describe("tool-round derivations (§3.6)", () => {
@@ -65,5 +67,46 @@ describe("ToolRoundCounter (§3.3)", () => {
     c.reset();
     expect(c.count).toBe(0);
     expect(c.atLimit).toBe(false);
+  });
+});
+
+describe("workerEndReport (§3.3, §7.2) — the two-way end report line", () => {
+  it("renders the exact format with pct, used/window and rounded seconds", () => {
+    const line = workerEndReport({
+      ended: "rounds",
+      rounds: 25,
+      roundLimit: 25,
+      usedTokens: 160_000,
+      windowTokens: 262_000,
+      elapsedMs: 383_000,
+    });
+    expect(line).toBe("[worker report: ended=rounds rounds=25/25 context=61% (160000/262000) elapsed=383s]");
+  });
+
+  it("completed with a fresh worker reports 0% without dividing by a zero window", () => {
+    const line = workerEndReport({
+      ended: "completed",
+      rounds: 1,
+      roundLimit: 25,
+      usedTokens: 0,
+      windowTokens: 0,
+      elapsedMs: 1_200,
+    });
+    expect(line).toBe("[worker report: ended=completed rounds=1/25 context=0% (0/0) elapsed=1s]");
+  });
+
+  it("labels every ending", () => {
+    for (const ended of ["completed", "rounds", "context", "timeout", "error", "cancelled"] as const) {
+      const line = workerEndReport({ ended, rounds: 3, roundLimit: 25, usedTokens: 10, windowTokens: 100, elapsedMs: 0 });
+      expect(line).toContain(`ended=${ended}`);
+    }
+  });
+});
+
+describe("contextBudgetNote (§3.3) — the 80%-of-context wrap-up note", () => {
+  it("names the context occupancy and tells the worker to answer or delegate", () => {
+    const note = contextBudgetNote(82);
+    expect(note).toContain("~82%");
+    expect(note).toMatch(/Answer now|delegate/i);
   });
 });

@@ -100,7 +100,6 @@ export const LIMITS: readonly LimitSpec[] = [
   { key: "context.estimateMarginTokens", area: "context", default: 2000, unit: "count", class: "tunable", action: "warn", min: 0, max: 100_000, doc: "Token-estimate safety margin.", inv: "CTX5" },
   { key: "context.defaultOutputReservation", area: "context", default: 1024, unit: "count", class: "tunable", action: "warn", min: 1, max: 1_000_000, doc: "Default output-token reservation when a model sets none.", inv: "CTX7" },
   { key: "context.summaryBudgetFloor", area: "context", default: 2000, unit: "count", class: "tunable", action: "warn", min: 0, max: 1_000_000, doc: "Minimum token budget for a compaction summary.", inv: "CTX8" },
-  { key: "context.excerptLineMaxChars", area: "context", default: 2000, unit: "chars", class: "tunable", action: "warn", min: 1, max: 1_000_000, doc: "Per-line cap in an evicted-tool-result excerpt.", inv: "CTX12" },
 
   // --- turn (A) ---
   { key: "turn.shutdownGraceMs", area: "turn", default: 5000, unit: "ms", class: "tunable", action: "warn", min: 0, max: 600_000, doc: "Grace period before a hard turn shutdown.", inv: "CTX20", alias: "turnShutdownGraceMs" },
@@ -147,7 +146,6 @@ export const LIMITS: readonly LimitSpec[] = [
   { key: "task.briefMaxChars", area: "task", default: 16384, unit: "chars", class: "tunable", action: "warn", min: 1, max: 10_000_000, doc: "Max chars of a task brief to a worker.", inv: "TASK1" },
   { key: "task.batchMax", area: "task", default: 8, unit: "count", class: "tunable", action: "warn", min: 1, max: 100, doc: "Max tasks in one batch task call.", inv: "TASK2" },
   { key: "task.depSummaryMaxChars", area: "task", default: 2000, unit: "chars", class: "tunable", action: "warn", min: 1, max: 10_000_000, doc: "Dependency-result summary passed to a dependent task.", inv: "TASK3" },
-  { key: "task.batchResultMaxChars", area: "task", default: 4000, unit: "chars", class: "tunable", action: "warn", min: 1, max: 10_000_000, doc: "Per-worker consolidated batch-result summary cap.", inv: "TASK4" },
   { key: "task.journalFanoutMaxPaths", area: "task", default: 256, unit: "count", class: "tunable", action: "warn", min: 1, max: 1_000_000, doc: "Max fan-out journal paths tracked.", inv: "TASK5" },
 
   // --- ingest (A, §8.7) ---

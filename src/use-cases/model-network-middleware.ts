@@ -8,9 +8,9 @@
  * only exposed by OpenAI, so VoidRift owns a portable watchdog that works for
  * every provider.
  *
- * Watchdog (§11.5): per attempt, a timer is armed for the request's effective
- * allowance (`networkModelTimeout` floor + 2 s per 1,000 estimated input tokens,
- * capped at 5× the floor) and DISARMED by the first streamed token via a
+ * Watchdog (§11.5): per attempt, a timer is armed for the flat first-byte
+ * allowance (`networkModelTimeout`, the single hung-connection guard) and
+ * DISARMED by the first streamed token via a
  * `handleLLMNewToken` callback (not an ad-hoc event). On fire the attempt is
  * aborted through its OWN `AbortController` (combined with the turn signal) and a
  * typed RETRYABLE `FirstByteTimeoutError` is raised — distinct from an
@@ -20,7 +20,7 @@
 import { createMiddleware } from "langchain";
 import { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import type { BaseMessage } from "@langchain/core/messages";
-import { classifyModelError, watchdogAllowanceMs } from "../entities/model-error.js";
+import { classifyModelError } from "../entities/model-error.js";
 import type { EventBus } from "../entities/event-bus.js";
 
 /**
@@ -64,6 +64,19 @@ function isFirstByteTimeout(err: unknown): boolean {
     cur = e.cause;
   }
   return false;
+}
+
+/**
+ * Did this model-call failure END on the first-byte timeout (§11.5, §7.2)? True
+ * for the typed `FirstByteTimeoutError` anywhere in the cause chain AND for the
+ * `ModelCallFailed` the retry loop throws once the budget is exhausted, whose
+ * message carries the watchdog text (the cause is not retained). Used by a
+ * worker to label its end report `timeout` rather than a generic `error`.
+ */
+export function endedOnFirstByteTimeout(err: unknown): boolean {
+  if (isFirstByteTimeout(err)) return true;
+  const msg = err instanceof Error ? err.message : String(err ?? "");
+  return /first-byte watchdog|no first token/i.test(msg);
 }
 
 /** True for a deliberate cancel (AbortError/TimeoutError), walking the cause
@@ -128,12 +141,9 @@ export interface ModelNetworkMiddlewareDeps {
   sessionId: string;
   /** `networkModelMaxRetries` for this call site (read live each attempt). */
   getMaxRetries: () => number;
-  /** `networkModelTimeout` — the watchdog allowance FLOOR (read live each attempt). */
+  /** `networkModelTimeout` — the FLAT first-byte allowance (read live each
+   * attempt): the single hung-connection guard, no per-token slope or cap. */
   getFloorMs: () => number;
-  /** The §4.8 ratio-based estimate of a request's input tokens — drives the
-   * watchdog allowance. The engine/worker thread the same estimate used by the
-   * overflow guard; the default counts the request text at 4 chars/token. */
-  estimateInputTokens: (messages: BaseMessage[]) => number;
   /** A tiny masking hook for the raw provider message on the egress (§10.10). */
   mask: (text: string) => string;
 }
@@ -153,9 +163,9 @@ export function createModelNetworkMiddleware(deps: ModelNetworkMiddlewareDeps) {
       // §3.3/§5.2 — the turn's single shared AbortSignal. A deliberate cancel
       // stops the retry loop AND its backoff immediately and is never retried.
       const turnSignal = req.runtime?.signal;
-      const messages = req.messages ?? [];
-      const estInput = deps.estimateInputTokens(messages);
-      const allowance = watchdogAllowanceMs(deps.getFloorMs(), estInput);
+      // §11.5 — the first-byte allowance is a FLAT guard: `networkModelTimeout`,
+      // the single hung-connection floor (no per-token slope, no cap multiple).
+      const allowance = deps.getFloorMs();
       let attempt = 0;
       for (;;) {
         attempt += 1;

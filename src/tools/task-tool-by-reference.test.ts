@@ -71,27 +71,30 @@ describe("task tool — brief pass-by-reference (§7.2)", () => {
   });
 });
 
-describe("task tool — batch result pass-by-reference (§7.2)", () => {
-  it("a 40k-char result returns a head + full-result handle and read_file returns the full text", async () => {
+describe("task tool — batch result follows the one delivery rule (§7.2/§8.3)", () => {
+  it("a 40k-char worker result is carried WHOLE in the consolidated result (no per-worker handle)", async () => {
     const { limits, bus, runCache, byRef } = wire();
     const full = "R".repeat(40_000);
     const dispatch = vi.fn(async () => batch(full));
     const t = buildTaskTool({ workers, dispatch, limits, bus, runCache, sessionId: "s1" });
     const msg = await invoke(t, { tasks: [{ id: "a", worker: "researcher", task: "do" }] });
     const content = String(msg.content);
-    expect(content).toMatch(/\[full result: \.voidrift\/cache\/run\/s1\/.+\.txt\]/);
+    // No per-worker clip or by-reference handle: the whole summary rides the
+    // consolidated result, which the §8.3 fit test evicts whole-or-pointer when
+    // it returns to the orchestrator.
+    expect(content).toContain(full);
+    expect(content).not.toContain("[full result:");
     expect(content).not.toContain("[truncated");
-    const handle = content.match(/\[full result: (\.voidrift\/cache\/run\/\S+\.txt)\]/)![1]!;
-    expect(runCache.read(handle)).toBe(full);
-    expect(byRef).toContainEqual(expect.objectContaining({ what: 'batch result for "a"', key: "task.batchResultMaxChars" }));
+    expect(byRef.some((r) => r.key === "task.batchResultMaxChars")).toBe(false);
   });
 
-  it("an override changes the inline head size", async () => {
-    const { limits, bus, runCache } = wire({ task: { batchResultMaxChars: 10 } });
+  it("a small worker result is carried whole with no handle", async () => {
+    const { limits, bus, runCache } = wire();
     const dispatch = vi.fn(async () => batch("z".repeat(100)));
     const t = buildTaskTool({ workers, dispatch, limits, bus, runCache, sessionId: "s1" });
     const msg = await invoke(t, { tasks: [{ id: "a", worker: "researcher", task: "do" }] });
-    expect(String(msg.content)).toContain("[full result:");
+    expect(String(msg.content)).toContain("z".repeat(100));
+    expect(String(msg.content)).not.toContain("[full result:");
   });
 });
 

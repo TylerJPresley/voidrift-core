@@ -118,29 +118,3 @@ export function classifyModelError(err: unknown): ModelErrorClass {
   }
   return { code: "unknown", retryable: false };
 }
-
-/**
- * The harness-owned FIRST-BYTE WATCHDOG allowance (core-blueprint.md §11.5).
- *
- * Only OpenAI's client exposes a per-call timeout, so VoidRift owns a portable
- * watchdog that bounds the FIRST streamed token for every provider identically.
- * `networkModelTimeout` (the floor) plus 2 seconds per 1,000 estimated input
- * tokens of the request (the §4.8 estimate), capped at five times the floor. The
- * two constants are INTERNAL (not config keys): measured over >1,000 real calls
- * (60k+-token requests had a 73 s median first byte, 309 s max). The client
- * constructor timeout is set to the 5× cap so the SDK timeout never fires first.
- */
-export const WATCHDOG_MS_PER_1K_TOKENS = 2000;
-/** The watchdog allowance ceiling as a multiple of the `networkModelTimeout`
- * floor (§11.5). Internal constant; also the client constructor timeout. */
-export const WATCHDOG_CAP_MULTIPLE = 5;
-
-/**
- * The effective first-byte allowance for one request (§11.5): the floor plus
- * 2 s per 1,000 estimated input tokens, capped at 5× the floor. PURE.
- */
-export function watchdogAllowanceMs(floorMs: number, estimatedInputTokens: number): number {
-  const tokens = Math.max(0, estimatedInputTokens);
-  const raised = floorMs + WATCHDOG_MS_PER_1K_TOKENS * (tokens / 1000);
-  return Math.min(raised, floorMs * WATCHDOG_CAP_MULTIPLE);
-}

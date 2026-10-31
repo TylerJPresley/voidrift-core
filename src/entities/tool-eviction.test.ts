@@ -1,8 +1,8 @@
 /**
  * Large-result eviction entity (core-blueprint.md §8.3).
  *
- * Pure, offline: the threshold is a share of the injected window, the handle is
- * head/tail excerpts + a hash-derived cache path, the artifact never reaches the
+ * Pure, offline: the threshold is `ingest.fitFraction` of the injected available
+ * budget, the handle is head/tail excerpts + a hash-derived cache path, the artifact never reaches the
  * model, masking runs before the body is shaped, and a hostile `tool_call.id`
  * can never influence the filename (it is not an input — the hash is).
  */
@@ -22,21 +22,30 @@ import path from "node:path";
 const mask = maskText;
 
 describe("§8.3 — large-result eviction (pure)", () => {
-  it("threshold is pct% of the endpoint window, so a small window evicts earlier", () => {
-    // Given a tiny 16k window vs a large 200k window at 10%.
-    expect(evictionThresholdTokens(16_000, 10)).toBe(1_600);
-    expect(evictionThresholdTokens(200_000, 10)).toBe(20_000);
+  it("threshold is fitFraction of the available budget, so less headroom evicts earlier", () => {
+    // Given 1600 tokens of headroom vs 20000, at fitFraction 0.4.
+    expect(evictionThresholdTokens(4_000, 0.4)).toBe(1_600);
+    expect(evictionThresholdTokens(50_000, 0.4)).toBe(20_000);
   });
 
-  it("a result at or below the threshold is NOT evicted (zero behavior change)", () => {
-    // Given a window whose 50% threshold is ~5 tokens (~20 chars).
-    const small = "short result"; // < 20 chars
-    expect(shouldEvict(small, { window: 40, pct: 50 })).toBe(false);
+  it("a result that FITS the available budget is NOT evicted (one delivery rule, delivered whole)", () => {
+    // ~5 tokens fit within 0.5 × 40 = 20 tokens of budget.
+    const small = "short result";
+    expect(shouldEvict(small, { availableBudget: 40, fitFraction: 0.5 })).toBe(false);
   });
 
-  it("a result ABOVE the threshold is evicted", () => {
+  it("a result that CANNOT fit the available budget is evicted", () => {
     const big = "x".repeat(10_000); // ~2500 tokens
-    expect(shouldEvict(big, { window: 1_000, pct: 10 })).toBe(true); // threshold ~25 tokens
+    // budget 1000 × 0.1 = 100 token threshold → does not fit → evict.
+    expect(shouldEvict(big, { availableBudget: 1_000, fitFraction: 0.1 })).toBe(true);
+  });
+
+  it("a result LARGER than the old 10%-of-window / 4000-char caps but within the fit fraction is delivered whole", () => {
+    // A 6000-char result (~1500 tokens): over the former 10%-of-a-16k-window
+    // (~400 tokens) and the 4000-char batch cap, yet within 0.4 of a 20k-token
+    // available budget (8000 tokens) → fits → NOT evicted, delivered whole.
+    const body = "x".repeat(6_000);
+    expect(shouldEvict(body, { availableBudget: 20_000, fitFraction: 0.4 })).toBe(false);
   });
 
   it("the handle carries the size, a head excerpt, a tail excerpt, and the relative cache path", () => {
@@ -83,13 +92,14 @@ describe("§8.3 — large-result eviction (pure)", () => {
     expect(e.handle).toContain("«redacted:");
   });
 
-  it("a single ENORMOUS line is char-capped in the handle so it stays bounded", () => {
+  it("a single enormous line is clipped in the handle by the internal cap (not a config key) while the full body is cached (P2)", () => {
     const oneBigLine = "q".repeat(100_000); // no newlines at all
     const e = evict(oneBigLine, { sessionId: "s", headLines: 30, tailLines: 20, mask });
-    // The handle does NOT embed the whole 100k line — it is bounded well under it.
+    // The handle stays bounded (the former per-line config key is gone, but the
+    // internal 2000-char per-excerpt-line cap keeps the handle small).
     expect(e.handle.length).toBeLessThan(8_192);
     expect(e.handle).toContain("more chars on this line");
-    // The FULL body is still cached intact.
+    // The FULL body is cached intact.
     expect(e.maskedBody.length).toBe(100_000);
   });
 
@@ -107,17 +117,6 @@ describe("§8.3 — large-result eviction (pure)", () => {
     // Hostile ids that WOULD escape are refused by the ONE containment helper.
     expect(resolveWithinRoot(cacheRoot, "../../etc/x")).toBeNull();
     expect(resolveWithinRoot(cacheRoot, "/etc/passwd")).toBeNull();
-  });
-
-  it("the per-line excerpt cap defaults to limits.context.excerptLineMaxChars (2000) and honors an override (CTX12)", () => {
-    const oneBigLine = "q".repeat(5_000);
-    // Default: each excerpt line capped at 2000, so the handle names ~3000 more chars.
-    const def = evict(oneBigLine, { sessionId: "s", headLines: 1, tailLines: 1, mask });
-    expect(def.handle).toContain("[3000 more chars on this line]");
-    // Override lower: a tighter cap cuts more and names the larger remainder.
-    const tight = evict(oneBigLine, { sessionId: "s", headLines: 1, tailLines: 1, mask, excerptLineMaxChars: 100 });
-    expect(tight.handle).toContain("[4900 more chars on this line]");
-    expect(tight.handle.length).toBeLessThan(def.handle.length);
   });
 });
 
@@ -178,11 +177,11 @@ describe("§8.3/§8.4 — flattenMcpContent bounds image/resource blocks with an
 });
 
 describe("§8.3 — applyResultPolicy is the ONE gate; a result over threshold is always evicted", () => {
-  it("returns null (unchanged) for a small result", () => {
+  it("returns null (unchanged) for a result that fits the available budget", () => {
     const out = applyResultPolicy("small", {
       sessionId: "s",
-      window: 1_000,
-      pct: 50,
+      availableBudget: 1_000,
+      fitFraction: 0.5,
       headLines: 2,
       tailLines: 2,
       mask,
@@ -190,12 +189,12 @@ describe("§8.3 — applyResultPolicy is the ONE gate; a result over threshold i
     expect(out).toBeNull();
   });
 
-  it("returns an eviction (handle + artifact + LIMIT marker) for an oversized result", () => {
+  it("returns an eviction (handle + artifact) for a result that cannot fit", () => {
     const big = Array.from({ length: 500 }, (_, i) => `row ${i}`).join("\n");
     const out = applyResultPolicy(big, {
       sessionId: "s",
-      window: 1_000,
-      pct: 10,
+      availableBudget: 1_000,
+      fitFraction: 0.1,
       headLines: 3,
       tailLines: 2,
       mask,

@@ -201,6 +201,11 @@ export interface DecisionPointDeps {
   home?: string;
   /** The resolved endpoint window, for §8.3 eviction sizing. */
   window: number;
+  /** §8.3/§8.7/§4.8 — the LIVE available token budget (`window − used − output
+   * reservation`, `ContextPipeline.availableBudget`) the eviction fit test runs
+   * against (`limits.ingest.fitFraction` of this). Absent → falls back to the
+   * static `window` (tests, standalone use). */
+  availableTokens?: () => number;
   /** The live session-scoped rules merged with config permissions (§9.1). */
   getSessionRules: () => PermissionRule[];
   /** The guardrail state (read/stale paths) for the unread/stale guardrail. */
@@ -1069,23 +1074,11 @@ async function maybeEvict(
   // so no path has a private cap and none bypasses.
   const e = applyResultPolicy(text, {
     sessionId: ownerSessionId,
-    window: deps.window,
-    pct: config.contextToolResultPct,
+    availableBudget: deps.availableTokens ? deps.availableTokens() : deps.window,
+    fitFraction: deps.limits ? deps.limits.get("ingest.fitFraction") : limitDefault("ingest.fitFraction"),
     headLines: config.toolsTrimHeadLines,
     tailLines: config.toolsTrimTailLines,
     mask: maskText,
-    ...(deps.limits
-      ? {
-          excerptLineMaxChars: deps.limits.get("context.excerptLineMaxChars"),
-          // §13.11 — an excerpt line cut at the cap is NEVER silent: emit ONE
-          // LIMIT_HIT naming the key (the port dedups to one per turn).
-          onLineTruncated: () =>
-            deps.limits!.hit("context.excerptLineMaxChars", undefined, {
-              session: ownerSessionId,
-              what: "tool-result excerpt line truncated",
-            }),
-        }
-      : {}),
   });
   if (!e) return null;
   await writeEvicted(ownerSessionId, e.name, e.maskedBody);

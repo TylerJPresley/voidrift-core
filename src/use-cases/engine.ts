@@ -92,7 +92,7 @@ import {
   type ContextOverflow,
   type OverflowSource,
 } from "../entities/context/model-guard.js";
-import { estimateTokens, CHARS_PER_TOKEN } from "../entities/context/budget.js";
+import { estimateTokens } from "../entities/context/budget.js";
 import { CoreErrorException, coreError, ErrorCode, type Result } from "../entities/errors.js";
 import { createModelNetworkMiddleware } from "./model-network-middleware.js";
 import { toolMatchesAgentList, TASK_TOOL_NAME, type AgentDefinition } from "../entities/subagents.js";
@@ -992,6 +992,10 @@ export class Engine {
       ...(this.deps.globalConfigDir ? { globalConfigDir: this.deps.globalConfigDir } : {}),
       ...(this.deps.home ? { home: this.deps.home } : {}),
       window: this.deps.window,
+      // §8.3/§8.7 — the LIVE available budget the eviction fit test runs against
+      // (`limits.ingest.fitFraction` of this), the SAME source the read_file fit
+      // test uses (§8.2), so every path shares one delivery rule.
+      availableTokens: () => this.pipeline(session).availableBudget([], this.turnMaxInputTokens > 0 ? this.turnMaxInputTokens : undefined),
       getSessionRules: () => session.sessionRules,
       guardrailState: () => ({ readPaths: session.readPaths, stalePaths: session.stalePaths }),
       markRead: (p) => session.markRead(p),
@@ -1684,16 +1688,14 @@ export class Engine {
     // §11.5 — delegate to the ONE shared model-network middleware (retry +
     // first-byte watchdog). The engine, every worker and the internal reviewer
     // use this same factory (DRY), so retry semantics, `MODEL_ERROR` and the
-    // watchdog are identical across all three. The watchdog allowance is driven
-    // by the §4.8 ratio-based estimate of THIS request's input tokens.
+    // watchdog are identical across all three. The first-byte allowance is the
+    // flat `networkModelTimeout` guard (§11.5).
     return createModelNetworkMiddleware({
       bus: this.deps.bus,
       modelName: this.deps.modelName,
       sessionId: session.id,
       getMaxRetries: () => this.deps.getConfig().networkModelMaxRetries,
       getFloorMs: () => this.deps.getConfig().networkModelTimeout,
-      estimateInputTokens: (messages) =>
-        Math.ceil(messages.reduce((n, m) => n + messageChars(m), 0) / CHARS_PER_TOKEN),
       mask: maskText,
     });
   }

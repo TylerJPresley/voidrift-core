@@ -1,7 +1,7 @@
 /**
  * The `limits` config section schema (core-blueprint.md §13.11), generated from
  * the registry (`entities/limits.ts`) so the config schema and the registry can
- * never drift. Nested by area (`{ context: { excerptLineMaxChars: 2000 } }`).
+ * never drift. Nested by area (`{ context: { summaryBudgetFloor: 2000 } }`).
  *
  * Validation mirrors the registry row: each leaf is a bare number within
  * `[min, max]` (using the registry's default action) or an object

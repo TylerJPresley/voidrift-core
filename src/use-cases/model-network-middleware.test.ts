@@ -14,7 +14,6 @@ import {
   ModelCallFailed,
   type ModelNetworkMiddlewareDeps,
 } from "./model-network-middleware.js";
-import { WATCHDOG_MS_PER_1K_TOKENS, WATCHDOG_CAP_MULTIPLE, watchdogAllowanceMs } from "../entities/model-error.js";
 import { EventBus } from "../entities/event-bus.js";
 
 /** A fake model that only needs to carry the per-attempt bound config
@@ -42,7 +41,6 @@ function deps(bus: EventBus, over: Partial<ModelNetworkMiddlewareDeps> = {}): Mo
     sessionId: "s1",
     getMaxRetries: () => 2,
     getFloorMs: () => 200,
-    estimateInputTokens: () => 0,
     mask: (t) => t.replace(/sk-[A-Za-z0-9]+/g, "***"),
     ...over,
   };
@@ -54,14 +52,13 @@ function wrap(d: ModelNetworkMiddlewareDeps) {
 
 const msgs = [new HumanMessage("hi")];
 
-describe("watchdogAllowanceMs (§11.5)", () => {
-  it("is floor + 2s/1k tokens, capped at 5× floor", () => {
-    expect(watchdogAllowanceMs(120_000, 0)).toBe(120_000);
-    // 10k tokens → +20s.
-    expect(watchdogAllowanceMs(120_000, 10_000)).toBe(120_000 + 10 * WATCHDOG_MS_PER_1K_TOKENS);
-    // A huge input is clamped to the cap.
-    expect(watchdogAllowanceMs(120_000, 10_000_000)).toBe(120_000 * WATCHDOG_CAP_MULTIPLE);
-    expect(WATCHDOG_CAP_MULTIPLE).toBe(5);
+describe("first-byte allowance (§11.5)", () => {
+  it("is the flat networkModelTimeout floor — no per-token slope, no cap multiple", () => {
+    // The watchdog allowance is now a single flat guard equal to
+    // `networkModelTimeout` (getFloorMs); the per-token slope and 5× cap are
+    // gone (P3). Exercised end-to-end by the watchdog tests below, which pass a
+    // fixed floor and no input estimate.
+    expect(true).toBe(true);
   });
 });
 
@@ -184,7 +181,7 @@ describe("shared model-network middleware — first-byte watchdog (§11.5)", () 
   it("first token inside the allowance succeeds (never cut)", async () => {
     const bus = new EventBus();
     // tiny floor 200ms, 0 tokens → allowance 200ms; first token at 50ms.
-    const run = wrap(deps(bus, { getFloorMs: () => 200, estimateInputTokens: () => 0 }));
+    const run = wrap(deps(bus, { getFloorMs: () => 200 }));
     const out = (await run(req(msgs), streamingHandler(50) as never)) as AIMessage;
     expect(out.content).toBe("done");
   });
@@ -212,16 +209,15 @@ describe("shared model-network middleware — first-byte watchdog (§11.5)", () 
     expect(codes).toEqual(["timeout", "timeout"]);
   });
 
-  it("the estimate drives the allowance: a large input gets a longer watchdog", async () => {
-    // floor 100ms. Small input (0 tokens) → 100ms allowance; a first token at
-    // 180ms would miss it. Large input (100k tokens) → capped at 500ms, so the
-    // SAME 180ms first token now succeeds.
-    const small = wrap(deps(new EventBus(), { getFloorMs: () => 100, estimateInputTokens: () => 0, getMaxRetries: () => 0 }));
+  it("the allowance is the flat floor, independent of input size (P3)", async () => {
+    // floor 100ms. A first token at 180ms misses the flat allowance regardless
+    // of input size — there is no per-token slope or cap that lengthens it.
+    const small = wrap(deps(new EventBus(), { getFloorMs: () => 100, getMaxRetries: () => 0 }));
     await expect(small(req(msgs), streamingHandler(180) as never)).rejects.toBeInstanceOf(ModelCallFailed);
-    const large = wrap(
-      deps(new EventBus(), { getFloorMs: () => 100, estimateInputTokens: () => 100_000, getMaxRetries: () => 0 }),
-    );
-    const out = (await large(req(msgs), streamingHandler(180) as never)) as AIMessage;
+    // A first token INSIDE the flat floor succeeds; raising the floor is the
+    // only way to allow a later first byte.
+    const wider = wrap(deps(new EventBus(), { getFloorMs: () => 500, getMaxRetries: () => 0 }));
+    const out = (await wider(req(msgs), streamingHandler(180) as never)) as AIMessage;
     expect(out.content).toBe("done");
   });
 

@@ -39,7 +39,7 @@ import type { DispatchRequest, FanoutResult } from "../use-cases/subagents.js";
  * in-code constants). HIGH clip sites (brief, dep-summary, batch-result) attach a
  * model-visible marker naming the key so a clip is never silent.
  *   task.briefMaxChars (TASK1), task.batchMax (TASK2),
- *   task.depSummaryMaxChars (TASK3), task.batchResultMaxChars (TASK4).
+ *   task.depSummaryMaxChars (TASK3).
  */
 function lim(limits: LimitsPort | undefined, key: string): number {
   return limits ? limits.get(key) : limitDefault(key);
@@ -188,7 +188,11 @@ type ReportStatus = "done" | "failed" | "skipped" | "cancelled";
 
 /** Fold an internal `WorkerStatus` to the reported status (§7.2). */
 function reportStatusOf(status: WorkerInfo["status"]): ReportStatus {
-  if (status === "merged" || status === "reviewed" || status === "succeeded") return "done";
+  // §3.3/§7.2 — `limit_reached` (rounds or context hard stop) carries a usable
+  // partial result and its leading end report, so it is reported `done` like any
+  // other finished worker; the orchestrator reads the report and re-dispatches
+  // only the unanswered part.
+  if (status === "merged" || status === "reviewed" || status === "succeeded" || status === "limit_reached") return "done";
   if (status === "aborted") return "cancelled";
   if (status === "skipped") return "skipped";
   return "failed";
@@ -288,50 +292,25 @@ function renderSingle(result: FanoutResult): { content: string; isError: boolean
 
 /** Fold a batch fan-out outcome into ONE consolidated ToolMessage content
  * (§7.2): per task `{ id, worker, status, summary }` in the GIVEN order, each
- * summary bounded at `task.batchResultMaxChars`, plus the merge/apply outcome a
- * mutating worker reports in its summary. Within the bound the summary is fenced
- * whole. Over it, with a run cache wired, the WHOLE result is stored and the
- * orchestrator gets the bounded head plus `[full result: <handle>]`; without a
- * run cache it falls back to the inline clip + marker. A LIMIT_HIT fires once
- * either way (§7.2, §14.6). */
+ * summary fenced as DATA (§8.2), plus the merge/apply outcome a mutating worker
+ * reports in its summary. The consolidated result follows the ONE delivery rule
+ * (§4.8, §8.3): it rides back to the orchestrator and the decision-point gate
+ * delivers it whole when it fits the remaining window (the
+ * `limits.ingest.fitFraction` fit test) or evicts it to a pointer plus excerpt —
+ * so there is no per-worker character cap here. */
 function renderBatch(
   order: { id: string; worker: string }[],
   byId: Map<string, WorkerInfo & { reported: ReportStatus }>,
-  limits?: LimitsPort,
-  scope?: { session?: string; worker?: string },
-  ref?: ByReference,
 ): { content: string; isError: boolean } {
-  const max = lim(limits, "task.batchResultMaxChars");
   const lines: string[] = [];
   let anyFailed = false;
   for (const { id, worker } of order) {
     const w = byId.get(id);
     const status: ReportStatus = w?.reported ?? "skipped";
     if (status === "failed" || status === "cancelled") anyFailed = true;
-    // Bound, THEN fence as DATA (§8.2) so a forged result row inside a summary
-    // cannot pass as a real `[id] … → status` row below. Over the bound: store
-    // the whole result and reference it (§7.2) or fall back to the inline marker.
-    const raw = w?.summary ?? "";
-    let bounded = raw.slice(0, max);
-    if (raw.length > max) {
-      if (limits) {
-        const r = limits.hit("task.batchResultMaxChars", raw.length, { what: "batch worker result truncated", ...scope });
-        // deny: the stage fails and the oversize content is NOT delivered — the
-        // row carries only the notice and the batch is reported as an error.
-        if (r.action === "deny") {
-          anyFailed = true;
-          lines.push(`[${id}] ${worker} → failed\nError: ${r.notice}`.trim());
-          continue;
-        }
-      }
-      if (ref) {
-        const { handle } = storeByRef(ref, "batch-result", raw, `batch result for "${id}"`, "task.batchResultMaxChars");
-        bounded += `\n[full result: ${handle}]`;
-      } else {
-        bounded += `\n${limitMarker("task.batchResultMaxChars", raw.length)}`;
-      }
-    }
-    const summary = fenceSummary(bounded);
+    // Fence the worker's summary as DATA (§8.2) so a forged result row inside a
+    // summary cannot pass as a real `[id] … → status` row below.
+    const summary = fenceSummary(w?.summary ?? "");
     lines.push(`[${id}] ${worker} → ${status}\n${summary}`.trim());
   }
   return { content: lines.join("\n\n"), isError: anyFailed };
@@ -347,14 +326,14 @@ export interface TaskToolDeps {
   /** §3.8 — an optional response schema for a typed worker result. */
   resultSchema?: unknown;
   /** §13.11 — the limits port. When present the task caps (brief, batch, dep
-   * summary, batch result) are read from the registry and a LIMIT_HIT is emitted
-   * on a clip. Absent → registry defaults (byte-identical to the old constants). */
+   * summary) are read from the registry and a LIMIT_HIT is emitted on a clip.
+   * Absent → registry defaults (byte-identical to the old constants). */
   limits?: LimitsPort;
   /** §13.11 — the session for LIMIT_HIT event scope (optional). */
   sessionId?: string;
   /** §7.2 — the run cache for pass-by-reference. When present an oversized brief
-   * or batch result is stored whole and the receiver gets a head + handle rather
-   * than a mid-text clip; absent → the inline clip + marker fallback. */
+   * is stored whole and the receiver gets a head + handle rather than a mid-text
+   * clip; absent → the inline clip + marker fallback. */
   runCache?: RunCache;
   /** §14.6 — the event bus for BY_REFERENCE trail records (optional). */
   bus?: EventBus;
@@ -478,7 +457,7 @@ export function buildTaskTool(deps: TaskToolDeps): StructuredToolInterface {
         if (w.taskId) byId.set(w.taskId, { ...w, reported: reportStatusOf(w.status) });
       }
       const order = tasks.map((t) => ({ id: t.id, worker: t.worker }));
-      const { content, isError } = renderBatch(order, byId, deps.limits, scope, ref);
+      const { content, isError } = renderBatch(order, byId);
       return new ToolMessage({ content, tool_call_id: callId, status: isError ? "error" : "success" });
     },
     { name: TASK_TOOL_NAME, description: taskDescription(deps.workers), schema: TASK_SCHEMA },

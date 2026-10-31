@@ -98,14 +98,13 @@ afterEach(async () => {
   for (const s of servers.splice(0)) await s.close();
 });
 
-function deps(bus: EventBus, floorMs: number, maxRetries: number, estTokens = 0) {
+function deps(bus: EventBus, floorMs: number, maxRetries: number) {
   return createModelNetworkMiddleware({
     bus,
     modelName: "m",
     sessionId: "s",
     getMaxRetries: () => maxRetries,
     getFloorMs: () => floorMs,
-    estimateInputTokens: () => estTokens,
     mask: (t) => t,
   }).wrapModelCall!;
 }
