@@ -1185,9 +1185,10 @@ describe("Subagents — worker stream drives the real code (§7.2, §6.3, §14.6
     const errorEvent = stream.find((e) => e.kind === "error");
     if (errorEvent) {
       // If there is an error event, it should also not leak the secret
+      const errText = (errorEvent.text ?? "").toLowerCase();
       expect(errorEvent.text).not.toContain("sk-test-1234567890abcdef");
       // And should contain a mask marker if the error text included the command
-      if (errorEvent.text.toLowerCase().includes("authorization") || errorEvent.text.toLowerCase().includes("curl")) {
+      if (errText.includes("authorization") || errText.includes("curl")) {
         expect(errorEvent.text).toContain("«redacted:");
       }
     }
