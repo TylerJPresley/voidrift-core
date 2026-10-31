@@ -1340,7 +1340,9 @@ export class Subagents {
    * take the first line, clip ~120 chars with an ellipsis. Reused by the tool
    * brief and the refused/failed error event so there is no second clip site. */
   private clipLine(text: string): string {
-    let line = text.replace(/[\x00-\x1f\x7f\n\r]/g, " ").trim();
+    // Mask secrets BEFORE clipping to prevent a secret's prefix from leaking (§7.2, §9)
+    const masked = maskText(text);
+    let line = masked.replace(/[\x00-\x1f\x7f\n\r]/g, " ").trim();
     if (line.length > 120) {
       line = line.substring(0, 117) + "…";
     }

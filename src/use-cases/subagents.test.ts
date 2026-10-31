@@ -1130,4 +1130,66 @@ describe("Subagents — worker stream drives the real code (§7.2, §6.3, §14.6
     expect(stream.filter((e) => e.kind === "summary")).toHaveLength(1);
     expect(stream[stream.length - 1]!.kind).toBe("summary");
   });
+
+  it("the stream masks secrets in tool briefs and error events (§7.2, §9)", async () => {
+    /**
+     * A model that calls execute_command with a Bearer token in the command arg.
+     * The brief should mask the token, and an error event should also mask it.
+     */
+    class TokenBearerToolModel extends BaseChatModel {
+      private seq = 0;
+      constructor(params: BaseChatModelParams = {}) {
+        super(params);
+      }
+      _llmType(): string {
+        return "token-bearer";
+      }
+      override bindTools(): this {
+        return this;
+      }
+      async _generate(): Promise<ChatResult> {
+        // First call: execute_command with a Bearer token in the args
+        const msg = new AIMessage({
+          content: "",
+          tool_calls: [{
+            name: "execute_command",
+            args: { command: "curl -H 'Authorization: Bearer sk-test-1234567890abcdef' https://example.com" },
+            id: `ctool-${this.seq++}`
+          }],
+        });
+        return { generations: [{ text: "", message: msg }] };
+      }
+    }
+
+    const vcs = new FakeVcs();
+    vcs.repo = false;
+    const sa = new Subagents(
+      makeDeps({ vcs, chatModel: new TokenBearerToolModel(), reviewerModel: reviewerPass(), workspaceRoot: ws }),
+    );
+    sa.register(streamAgent);
+
+    const result = await sa.dispatch([{ agent: "streamer", task: "fetch secure" }]);
+    const workerId = result.workers[0]!.workerId;
+    const stream: WorkerStreamEvent[] = sa.stream(workerId);
+
+    // Find the tool event (execute_command brief)
+    const toolEvent = stream.find((e) => e.kind === "tool" && e.tool === "execute_command");
+    expect(toolEvent).toBeDefined();
+    expect(toolEvent!.text).toBeDefined();
+    // Tool brief should NOT contain the actual token
+    expect(toolEvent!.text).not.toContain("sk-test-1234567890abcdef");
+    // Tool brief SHOULD contain the mask marker for "authorization"
+    expect(toolEvent!.text).toContain("«redacted:authorization»");
+
+    // Find the error event (should also be masked)
+    const errorEvent = stream.find((e) => e.kind === "error");
+    if (errorEvent) {
+      // If there is an error event, it should also not leak the secret
+      expect(errorEvent.text).not.toContain("sk-test-1234567890abcdef");
+      // And should contain a mask marker if the error text included the command
+      if (errorEvent.text.toLowerCase().includes("authorization") || errorEvent.text.toLowerCase().includes("curl")) {
+        expect(errorEvent.text).toContain("«redacted:");
+      }
+    }
+  });
 });
