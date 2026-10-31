@@ -33,6 +33,13 @@ import { classifyReadPath, type ControlPathContext } from "../entities/protected
 import { runCommand } from "../adapters/command-runner.js";
 import type { LimitsPort } from "../entities/ports/limits-port.js";
 import type { RunCache } from "../entities/ports/run-cache.js";
+import {
+  searchContentsBounded,
+  SKIP_DIRS,
+  MAX_FILE_BYTES,
+  MAX_WALK_DEPTH,
+  MATCH_CAP,
+} from "./search-contents.js";
 
 /** The §8.2 argument schemas — the single source for binding and validation. */
 export const READ_FILE_SCHEMA = z.object({
@@ -106,7 +113,7 @@ export function builtinToolDefinitions(): { def: ToolDefinition; exec: ToolExecu
     { name: "read_file", description: "Read a workspace file.", schema: READ_FILE_SCHEMA, readOnly: true },
     { name: "glob_files", description: "Return workspace paths matching a glob.", schema: GLOB_FILES_SCHEMA, readOnly: true },
     { name: "workspace_map", description: "Return a directory tree with extracted symbols.", schema: WORKSPACE_MAP_SCHEMA, readOnly: true },
-    { name: "search_contents", description: "Regex content search across the workspace.", schema: SEARCH_CONTENTS_SCHEMA, readOnly: true },
+    { name: "search_contents", description: "Regex content search (JS regex; prefix (?i) for case-insensitive). path: a directory or one file. include: a filename glob such as *.ts.", schema: SEARCH_CONTENTS_SCHEMA, readOnly: true },
     { name: "write_file", description: "Create or overwrite a workspace file.", schema: WRITE_FILE_SCHEMA, readOnly: false },
     { name: "edit_file", description: "A single exact search-and-replace in a workspace file.", schema: EDIT_FILE_SCHEMA, readOnly: false },
     { name: "execute_command", description: "Run a shell command in the workspace root.", schema: EXECUTE_COMMAND_SCHEMA, readOnly: false },
@@ -449,28 +456,49 @@ export function buildCoreTools(
         const bad = globPatternError(filenameGlob, "include");
         if (bad) return toolError(bad, config);
       }
-      // §8.2 — the content search is bounded by a wall-clock timeout. On a
-      // timeout it falls back to a glob-based FILENAME search (the pattern is
-      // matched against file names, not contents), capped at
-      // `limits.tools.searchFallbackMax` (default 100) results, returned with a
-      // VISIBLE notice naming the cause and the limit key. The grep backend
-      // offers no cancellation handle, so the timer abandons the (now-detached)
-      // grep and proceeds with the bounded fallback — the tool never hangs.
-      const SEARCH_TIMEOUT = Symbol("search-timeout");
-      let timer: ReturnType<typeof setTimeout> | undefined;
+      // §8.2 — a REAL regex content scan (JS `RegExp`, a leading `(?i)` →
+      // case-insensitive), bounded by a wall-clock timeout. The scan runs in a
+      // Node worker thread that is TERMINATED when the budget fires, so a
+      // catastrophically-backtracking pattern cannot hang the process. An
+      // invalid regex is searched as literal text and the result opens with one
+      // note naming the error. On timeout it falls back to a glob-based FILENAME
+      // search (the pattern matched against file names), capped at
+      // `limits.tools.searchFallbackMax` (default 100), returned with a VISIBLE
+      // notice naming the cause and the limit key.
       const searchTimeoutMs = cfg.limits ? cfg.limits.get("tools.searchTimeoutMs") : SEARCH_CONTENTS_TIMEOUT_MS;
-      const raced = await Promise.race([
-        backend.grep(pattern, root, filenameGlob, 100),
-        new Promise<typeof SEARCH_TIMEOUT>((resolve) => {
-          timer = setTimeout(() => resolve(SEARCH_TIMEOUT), searchTimeoutMs);
-        }),
-      ]);
-      if (timer) clearTimeout(timer);
-      if (raced !== SEARCH_TIMEOUT) {
-        const r = raced;
-        if (r.error) return toolError(`Error: ${r.error}`, config);
-        const matches = r.matches ?? [];
-        return matches.length === 0 ? "No matches found." : matches.map((m) => `${m.path}:${m.line}:${m.text}`).join("\n");
+      // The backend's resolved workspace root (public at runtime, typed
+      // `protected` in the deepagents defs — read through a narrow cast, as the
+      // execute path does). The worker never resolves above `root` (already
+      // confined) and does not follow directory symlinks.
+      const rootAbs = (backend as unknown as { cwd: string }).cwd;
+      const outcome = await searchContentsBounded(
+        {
+          rootAbs,
+          rootRel: root,
+          pattern,
+          filenameGlob,
+          skipDirs: [...SKIP_DIRS],
+          maxFileBytes: MAX_FILE_BYTES,
+          maxDepth: MAX_WALK_DEPTH,
+          matchCap: MATCH_CAP,
+        },
+        searchTimeoutMs,
+      );
+      if (outcome.kind === "error") {
+        return toolError(`Error: ${outcome.message}`, config);
+      }
+      if (outcome.kind === "ok") {
+        // §8.2 — an invalid regex: one note naming the error, then the literal
+        // results. The cap notice closes the result when 100 lines were reached.
+        const note = outcome.regexError
+          ? `ℹ '${pattern}' is not a valid regular expression (${outcome.regexError}); searched as literal text.`
+          : null;
+        if (outcome.matches.length === 0) {
+          return note ? `${note}\nNo matches found.` : "No matches found.";
+        }
+        const body = outcome.matches.map((m) => `${m.path}:${m.line}:${m.text}`).join("\n");
+        const cap = outcome.capped ? "100 matches shown; narrow the pattern or path" : null;
+        return [note, body, cap].filter((s): s is string => s !== null).join("\n");
       }
       // Timed out → bounded filename fallback.
       // §13.11 `tools.searchTimeoutMs` — emit ONE LIMIT_HIT naming the key when
@@ -478,9 +506,20 @@ export function buildCoreTools(
       // filename fallback runs). The port dedups per key per turn.
       cfg.limits?.hit("tools.searchTimeoutMs", searchTimeoutMs, { what: "content search timed out; filename fallback" });
       const cap = cfg.limits ? cfg.limits.get("tools.searchFallbackMax") : 100;
-      // Match the pattern against file names: a bare word becomes `*word*`; a
-      // user-supplied glob (containing `*`/`?`) is used as-is under the root.
-      const nameGlob = /[*?]/.test(pattern) ? pattern : `*${pattern}*`;
+      // Match the FILE NAMES instead of contents: take the pattern's literal
+      // word runs (dropping regex metacharacters and a leading `(?i)`) and wrap
+      // the longest in `*…*`; a pattern that is already a plain glob (`*`/`?`,
+      // no other regex syntax) is used as-is. A pattern with no literal run
+      // falls back to `*` (every file under the root, still bounded by the cap).
+      const isPlainGlob = /[*?]/.test(pattern) && !/[()[\]{}^$+|\\]/.test(pattern);
+      let nameGlob: string;
+      if (isPlainGlob) {
+        nameGlob = pattern;
+      } else {
+        const words = pattern.replace(/^\(\?i\)/, "").match(/[A-Za-z0-9_.-]+/g) ?? [];
+        const longest = words.sort((a, b) => b.length - a.length)[0];
+        nameGlob = longest ? `*${longest}*` : "*";
+      }
       const globPattern = root === "." ? `**/${nameGlob}` : `${root.replace(/\/+$/, "")}/**/${nameGlob}`;
       const g = await backend.glob(globPattern);
       if (g.error) {
@@ -499,7 +538,7 @@ export function buildCoreTools(
         `(up to ${cap} results — raise limits.tools.searchFallbackMax).`;
       return names.length === 0 ? `${notice}\nNo files matched.` : `${notice}\n${names.join("\n")}`;
     },
-    { name: "search_contents", description: "Regex content search across the workspace.", schema: SEARCH_CONTENTS_SCHEMA },
+    { name: "search_contents", description: "Regex content search (JS regex; prefix (?i) for case-insensitive). path: a directory or one file. include: a filename glob such as *.ts.", schema: SEARCH_CONTENTS_SCHEMA },
   );
 
   const writeFile = tool(

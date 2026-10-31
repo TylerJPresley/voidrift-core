@@ -10,12 +10,12 @@
  * fails on dash). Tests use symlink markers instead (see process-marker.ts).
  */
 import { hermeticTmp } from "../test-hermetic.js";
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import path from "node:path";
 import fs from "node:fs/promises";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { LocalShellBackend } from "deepagents";
-import { buildCoreTools, builtinToolDefinitions, buildMcpModelTools, buildPluginModelTools, SEARCH_CONTENTS_TIMEOUT_MS } from "./builtin.js";
+import { buildCoreTools, builtinToolDefinitions, buildMcpModelTools, buildPluginModelTools } from "./builtin.js";
 import { ToolRegistry } from "../entities/tool-registry.js";
 import { z } from "zod";
 import type { StructuredToolInterface } from "@langchain/core/tools";
@@ -591,44 +591,50 @@ describe("read_file read guard (§9.4/§10.11/§10.12 — MED cross-session + co
 });
 
 describe("search_contents timeout → glob filename fallback (§8.2)", () => {
+  // A catastrophically-backtracking pattern on a long line forces the wall-clock
+  // bound to fire deterministically; the lowered `searchTimeoutMs` keeps a large
+  // margin over the per-file read while still terminating the runaway match.
+  const CATASTROPHIC = "(a+)+$";
+  const LONG_LINE = "a".repeat(60_000) + "b";
+
   it("falls back to a bounded filename glob capped at limits.tools.searchFallbackMax with a visible notice", async () => {
-    vi.useFakeTimers();
+    const { LimitsCapability } = await import("../use-cases/limits-capability.js");
+    const { resolveLimits } = await import("../entities/limits-resolve.js");
+    const { EventBus } = await import("../entities/event-bus.js");
+    const ws2 = hermeticTmp("search-fallback");
     try {
-      const { LimitsCapability } = await import("../use-cases/limits-capability.js");
-      const { resolveLimits } = await import("../entities/limits-resolve.js");
-      const { EventBus } = await import("../entities/event-bus.js");
+      // The runaway line (so the content scan times out) plus three files whose
+      // names the fallback glob (`*a*`, derived from the pattern) matches.
+      await fs.writeFile(path.join(ws2, "slow.txt"), LONG_LINE + "\n");
+      await fs.writeFile(path.join(ws2, "a-one.ts"), "x\n");
+      await fs.writeFile(path.join(ws2, "a-two.ts"), "x\n");
+      await fs.writeFile(path.join(ws2, "a-three.ts"), "x\n");
       const limits = new LimitsCapability(
-        resolveLimits([{ layer: "project", limits: { tools: { searchFallbackMax: 2 } } }]),
+        resolveLimits([{ layer: "project", limits: { tools: { searchTimeoutMs: 150, searchFallbackMax: 2 } } }]),
         new EventBus(),
       );
-      // A mock backend whose grep NEVER resolves (forces the timeout) and whose
-      // glob returns three filename matches (so the cap of 2 bites).
-      const backend = {
-        grep: () => new Promise(() => {}),
-        glob: async () => ({ files: [{ path: "a-foo.ts" }, { path: "b-foo.ts" }, { path: "c-foo.ts" }] }),
-      } as unknown as import("deepagents").LocalShellBackend;
+      const backend = new LocalShellBackend({ rootDir: ws2 });
       const tools = buildCoreTools(backend, { workspaceMaxReadLines: 2000, workspaceMapDepth: 5, limits });
-      const p = call(byName(tools, "search_contents"), { pattern: "foo" });
-      await vi.advanceTimersByTimeAsync(SEARCH_CONTENTS_TIMEOUT_MS + 1);
-      const out = await p;
+      const out = await call(byName(tools, "search_contents"), { pattern: CATASTROPHIC });
       expect(out).toContain("content search timed out");
       expect(out).toContain("limits.tools.searchFallbackMax");
-      // Capped at 2 of the 3 matches.
-      expect(out).toContain("a-foo.ts");
-      expect(out).toContain("b-foo.ts");
-      expect(out).not.toContain("c-foo.ts");
+      // Capped at 2 of the (at least 3) `*a*` filename matches.
+      expect(out.split("\n").filter((l) => /a-(one|two|three)\.ts$/.test(l)).length).toBe(2);
     } finally {
-      vi.useRealTimers();
+      await fs.rm(ws2, { recursive: true, force: true });
     }
   });
 
-  it("returns real matches when grep completes before the timeout (no fallback)", async () => {
-    const backend = {
-      grep: async () => ({ matches: [{ path: "x.ts", line: 3, text: "foo here" }] }),
-      glob: async () => ({ files: [] }),
-    } as unknown as import("deepagents").LocalShellBackend;
-    const tools = buildCoreTools(backend, { workspaceMaxReadLines: 2000, workspaceMapDepth: 5 });
-    const out = await call(byName(tools, "search_contents"), { pattern: "foo" });
-    expect(out).toBe("x.ts:3:foo here");
+  it("returns real matches when the scan completes before the timeout (no fallback)", async () => {
+    const ws2 = hermeticTmp("search-ok");
+    try {
+      await fs.writeFile(path.join(ws2, "x.ts"), "nope\nfoo here\n");
+      const backend = new LocalShellBackend({ rootDir: ws2 });
+      const tools = buildCoreTools(backend, { workspaceMaxReadLines: 2000, workspaceMapDepth: 5 });
+      const out = await call(byName(tools, "search_contents"), { pattern: "foo" });
+      expect(out).toBe("x.ts:2:foo here");
+    } finally {
+      await fs.rm(ws2, { recursive: true, force: true });
+    }
   });
 });
