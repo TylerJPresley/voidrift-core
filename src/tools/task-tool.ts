@@ -116,7 +116,11 @@ function sanitizeLine(text: string): string {
  * context facts, dependency summaries, a worked example) in the delegation
  * manual — see `read_manual {action:"read", id:"core/delegation"}` (§12.8). */
 export function taskDescription(workers: DispatchableWorker[]): string {
-  const head = "Delegate work to specialized worker agents, chosen by name. Each returns a summary.";
+  const head =
+    "Delegate work to specialized worker agents, chosen by name. Each returns a summary.\n" +
+    "USE FOR: a question that takes many reads, a change in a named scope, research outside the workspace, or independent workstreams.\n" +
+    "DO NOT USE FOR: anything you can do in a few reads or searches yourself, a single tool call, or 'read everything and list it'.\n" +
+    "Each task states the decision or result it feeds, the exact files or directories, the answer size, and when to stop. A worker's summary is a self-report: verify what you rely on.";
   const forms =
     "Two forms (use exactly one):\n" +
     "- Single: { worker, task, context? }\n" +

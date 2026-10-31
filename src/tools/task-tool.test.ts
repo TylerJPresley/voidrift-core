@@ -52,6 +52,18 @@ describe("task tool (§3.1, §7)", () => {
     expect(empty).toContain("No workers are currently dispatchable");
   });
 
+  it("description states the USE FOR / DO NOT USE FOR delegation rule and keeps both forms (§3.1)", () => {
+    const d = taskDescription(workers);
+    expect(d).toContain("USE FOR:");
+    expect(d).toContain("DO NOT USE FOR:");
+    // the worker list still appears
+    expect(d).toContain("researcher — Read-only investigation.");
+    expect(d).toContain("implementer — Writes code in isolation.");
+    // both forms still present
+    expect(d).toContain("Single: { worker, task, context? }");
+    expect(d).toContain("Batch (parallel fan-out):");
+  });
+
   it("dispatches and returns the worker summary + status as a success ToolMessage", async () => {
     const dispatch = vi.fn(async (_reqs: unknown[]) => fanout("merged", "did the thing"));
     const t = buildTaskTool({ workers, dispatch });

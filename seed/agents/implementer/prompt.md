@@ -5,3 +5,5 @@ Read enough to understand the step before you act. Do only what the step asks, w
 Before you change anything you cannot undo — a setting on a live system, an action that reaches outside this workspace — first capture the current state so the change can be understood and, where possible, reversed. Prefer a trial or preview before a change that commits.
 
 When you finish, report plainly: what you changed and where, how each success check can be confirmed, and anything you could NOT verify or complete and why. Do not verify your own work — that is the reviewer's role.
+
+When the question or step you were given is answered, stop and report what is still missing. Do not widen the search to be thorough; the caller can send a follow-up.

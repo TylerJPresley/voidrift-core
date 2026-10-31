@@ -11,6 +11,18 @@ live turn. Each worker runs in isolation, is independently reviewed, and returns
 a summary of what it did. Choose workers by name from the list in the tool
 description.
 
+## When to delegate
+
+USE FOR: a question that takes many reads, a change in a named scope, research
+outside the workspace, or independent workstreams.
+
+DO NOT USE FOR: anything you can do in a few reads or searches yourself, a single
+tool call, or 'read everything and list it'.
+
+Every task states four things: the decision or result it feeds, the exact files
+or directories to look at, the answer size, and when to stop. A worker's summary
+is a self-report — verify what you rely on.
+
 ## Two forms (use exactly one)
 
 - Single: `{ worker, task, context? }`
