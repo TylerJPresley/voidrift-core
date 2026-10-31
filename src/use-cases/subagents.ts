@@ -21,7 +21,7 @@
  * The use-case may depend on LangChain/LangGraph (§1 rule 4); no such type
  * crosses the facade — the facade reads the DTOs in `entities/subagents.ts`.
  */
-import { AIMessage, SystemMessage, type BaseMessage } from "@langchain/core/messages";
+import { AIMessage, SystemMessage, type BaseMessage, ToolMessage } from "@langchain/core/messages";
 import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons";
 import { createAgent, createMiddleware } from "langchain";
 import type { ResponseFormat } from "langchain";
@@ -1207,28 +1207,95 @@ export class Subagents {
   }
 
   /**
-   * §7.2/§14.6 — a `wrapToolCall` middleware that emits ONE
-   * `WORKER_STATUS_CHANGED { status: "running", tool }` as the worker begins each
-   * tool call, so the live fan-out monitor shows the current tool (Run/Search/…)
-   * for the whole call, not just the row's dispatch state. The worker is already
-   * `running`; this carries the tool name on the same terminal→owner scope. It
-   * never gates (the one decision point, next in the chain, does) and never
-   * changes the worker's status, only annotates it with the active tool. A
-   * worker whose row has gone (defensive) is a no-op.
+   * §7.2/§14.6 — a `wrapToolCall` middleware that pushes stream events for each
+   * tool call: {kind:'tool', tool, text: one-line brief of args clipped ~120 chars},
+   * and for write_file/edit_file, after return, the diff block. Also emits
+   * `WORKER_STATUS_CHANGED { status: "running", tool }` to keep fan-out rows updated.
+   * The worker is already `running`; this annotates it with the active tool. It never
+   * gates (the one decision point, next in the chain, does). A worker whose row has
+   * gone (defensive) is a no-op.
    */
   private workerToolStatusMiddleware(workerId: string) {
     const spec = {
       name: "voidrift-worker-tool-status",
       wrapToolCall: async (
-        request: { toolCall: { name: string } },
+        request: { toolCall: { name: string; args?: Record<string, unknown> } },
         handler: (r: unknown) => unknown,
       ) => {
         const w = this.workers.get(workerId);
-        if (w && w.status === "running") this.transition(w, "running", request.toolCall.name);
-        return handler(request);
+        if (!w) return handler(request);
+
+        const toolName = request.toolCall.name;
+        
+        // Emit WORKER_STATUS_CHANGED to keep fan-out rows updated
+        if (w.status === "running") {
+          this.deps.bus.emit(
+            "WORKER_STATUS_CHANGED",
+            { workerId, status: "running", agent: w.agent, ...(w.taskId !== undefined ? { taskId: w.taskId } : {}), tool: toolName },
+            { session: this.ownerSessionId(), worker: workerId },
+          );
+        }
+
+        // Push tool event with brief args
+        const brief = this.makeToolBrief(toolName, request.toolCall.args ?? {});
+        w.stream.push({ workerId, kind: "tool", tool: toolName, text: brief });
+
+        // Call the handler and capture result
+        const result = await handler(request);
+
+        // For write_file/edit_file, extract and push the diff block
+        if ((toolName === "write_file" || toolName === "edit_file") && result instanceof ToolMessage) {
+          const content = result.content;
+          if (typeof content === "string" && content.includes("```diff")) {
+            const diffStart = content.indexOf("```diff");
+            const diffEnd = content.indexOf("```", diffStart + 6) + 3;
+            if (diffEnd > diffStart) {
+              const diffBlock = content.substring(diffStart, diffEnd);
+              w.stream.push({ workerId, kind: "tool", tool: toolName, text: diffBlock });
+            }
+          }
+        }
+
+        return result;
       },
     };
     return createMiddleware(spec as Parameters<typeof createMiddleware>[0]);
+  }
+
+  /** Push the summary stream event and return the worker (§7.2). */
+  private finishWorker(w: LiveWorker): LiveWorker {
+    w.stream.push({ workerId: w.workerId, kind: "summary", text: w.summary || "" });
+    return w;
+  }
+
+  /** Extract a one-line brief of tool args, clipped ~120 chars, newlines stripped. */
+  private makeToolBrief(toolName: string, args: Record<string, unknown>): string {
+    const briefParts: string[] = [];
+    
+    if (toolName === "read_file" || toolName === "glob_files" || toolName === "search_contents") {
+      if (args.path) briefParts.push(`${args.path}`);
+      if (args.pattern && toolName === "search_contents") briefParts.push(`pattern: ${args.pattern}`);
+    } else if (toolName === "write_file" || toolName === "edit_file") {
+      if (args.path) briefParts.push(`${args.path}`);
+    } else if (toolName === "execute_command") {
+      if (args.command) briefParts.push(`${args.command}`);
+    } else if (toolName === "web_fetch" || toolName === "web_search") {
+      if (args.url) briefParts.push(`${args.url}`);
+      if (args.query) briefParts.push(`${args.query}`);
+    } else {
+      // Generic: list all non-empty string/number values
+      for (const [, val] of Object.entries(args)) {
+        if (typeof val === "string" || typeof val === "number") {
+          briefParts.push(`${val}`);
+        }
+      }
+    }
+
+    let brief = briefParts.join(" / ").replace(/\n/g, " ");
+    if (brief.length > 120) {
+      brief = brief.substring(0, 117) + "…";
+    }
+    return brief || `${toolName}`;
   }
 
   /**
@@ -1413,17 +1480,24 @@ export class Subagents {
       { session: this.ownerSessionId(), worker: workerId },
     );
     w.stream.push({ workerId, kind: "status", status: w.status });
-    return w;
+          return this.finishWorker(w);
   }
 
   private transition(w: LiveWorker, status: WorkerStatus, tool?: string): void {
+    const oldStatus = w.status;
     w.status = status;
+    
+    // Emit WORKER_STATUS_CHANGED for fan-out rows (with tool if provided)
     this.deps.bus.emit(
       "WORKER_STATUS_CHANGED",
       { workerId: w.workerId, status, agent: w.agent, ...(w.taskId !== undefined ? { taskId: w.taskId } : {}), ...(tool ? { tool } : {}) },
       { session: this.ownerSessionId(), worker: w.workerId },
     );
-    w.stream.push({ workerId: w.workerId, kind: "status", status, ...(tool ? { tool } : {}) });
+    
+    // Push status stream event ONLY when status actually changes (§7.2)
+    if (status !== oldStatus) {
+      w.stream.push({ workerId: w.workerId, kind: "status", status });
+    }
   }
 
   /** Run one worker end-to-end: dispatch, verify, apply through the two gates. */
@@ -1431,7 +1505,7 @@ export class Subagents {
     let w: LiveWorker | undefined;
     try {
       w = await this.runWorkerInner(fanoutId, req, signal, taskId);
-      return w;
+            return this.finishWorker(w);
     } finally {
       // §10.11 — a worker's run ending is one of the ways a turn can end: flush
       // the worker's turn-net journal entries (its writes aggregate per
@@ -1457,11 +1531,11 @@ export class Subagents {
     if (!def) {
       w.summary = `unknown agent: ${req.agent}`;
       this.transition(w, "failed");
-      return w;
+            return this.finishWorker(w);
     }
     if (signal.aborted) {
       this.transition(w, "aborted");
-      return w;
+            return this.finishWorker(w);
     }
 
     // §2.7c/§3.1 — the active top-level agent's `workers` allow list gates which
@@ -1484,7 +1558,7 @@ export class Subagents {
       w.summary = guidance;
       this.deps.bus.emit("PERMISSION_DENIED", { tool: "task", reason: guidance }, { session: this.ownerSessionId(), worker: w.workerId });
       this.transition(w, "failed");
-      return w;
+            return this.finishWorker(w);
     }
 
     // §3.1 / §7.1 — only a WRITE-CLASS worker gets isolation. A READ-CLASS
@@ -1501,13 +1575,13 @@ export class Subagents {
       const result = await this.invokeAgent(def, rootDir, req.task, signal, { fanoutId, workerId: w.workerId, worker: def.name, ...(taskId ? { taskId } : {}) }, undefined, req.resultSchema);
       if (signal.aborted) {
         this.transition(w, "aborted");
-        return w;
+              return this.finishWorker(w);
       }
       w.summary = result.summary;
       // §3.3/§7.2 — a worker that hit its tool-round budget ends on the terminal
       // `limit_reached` status with its non-empty result (never merged/failed).
       this.transition(w, result.status === "limit_reached" ? "limit_reached" : result.ok ? "merged" : "failed");
-      return w;
+            return this.finishWorker(w);
     }
 
     // §9.5 / §9.7 — dispatching a WRITE-CLASS worker is a WRITE call: DENIED
@@ -1522,7 +1596,7 @@ export class Subagents {
       w.summary = guidance;
       this.deps.bus.emit("PERMISSION_DENIED", { tool: "task", reason: guidance }, { session: this.ownerSessionId(), worker: w.workerId });
       this.transition(w, "failed");
-      return w;
+            return this.finishWorker(w);
     }
 
     // §7.3 step 1 — a WRITE-CLASS worker gets a worktree per worker inside a git
@@ -1560,7 +1634,7 @@ export class Subagents {
       if (worktree) this.deps.vcs.preserveWorktree(worktree);
       // §7.4 / §3.3 — a cancelled staged worker preserves its staging folder as a
       // recovery artifact (offered apply/discard on resume); it is NOT discarded.
-      return w;
+            return this.finishWorker(w);
     }
     if (!result.ok) {
       w.summary = result.summary;
@@ -1571,7 +1645,7 @@ export class Subagents {
       } else if (w.staging) {
         await this.deps.staging.discard(w.staging);
       }
-      return w;
+            return this.finishWorker(w);
     }
     // §3.3/§7.2 — a WRITE-CLASS worker that reached its tool-round budget ends on
     // the terminal `limit_reached` status with its non-empty result; its partial
@@ -1585,7 +1659,7 @@ export class Subagents {
         w.recoveryBranch = recoveryBranch;
       }
       this.transition(w, "limit_reached");
-      return w;
+            return this.finishWorker(w);
     }
     w.summary = result.summary;
     this.transition(w, "needs_review");
@@ -1602,7 +1676,7 @@ export class Subagents {
       } else if (w.staging) {
         await this.deps.staging.discard(w.staging);
       }
-      return w;
+            return this.finishWorker(w);
     }
     this.transition(w, "reviewed");
 
@@ -1646,7 +1720,7 @@ export class Subagents {
         );
         return false;
       });
-      if (done) return w;
+      if (done)       return this.finishWorker(w);
     } else if (w.staging) {
       // §7.4 gate 2 — staged apply is an ordinary Guardian-gated write, resolved
       // through the SAME one decision point as a merge. The apply runs inside the
@@ -1687,10 +1761,10 @@ export class Subagents {
         );
         return false;
       });
-      if (done) return w;
+      if (done)       return this.finishWorker(w);
     }
     this.transition(w, "merged");
-    return w;
+          return this.finishWorker(w);
   }
 
   /**
