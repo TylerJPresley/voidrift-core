@@ -1241,19 +1241,30 @@ export class Subagents {
         w.stream.push({ workerId, kind: "tool", tool: toolName, text: brief });
 
         // Call the handler and capture result
-        const result = await handler(request);
+        let result: unknown;
+        try {
+          result = await handler(request);
+        } catch (err) {
+          // Stream push never throws into the tool call; error propagates after event is recorded
+          throw err;
+        }
 
-        // For write_file/edit_file, extract and push the diff block
-        if ((toolName === "write_file" || toolName === "edit_file") && result instanceof ToolMessage) {
-          const content = result.content;
-          if (typeof content === "string" && content.includes("```diff")) {
-            const diffStart = content.indexOf("```diff");
-            const diffEnd = content.indexOf("```", diffStart + 6) + 3;
-            if (diffEnd > diffStart) {
-              const diffBlock = content.substring(diffStart, diffEnd);
-              w.stream.push({ workerId, kind: "tool", tool: toolName, text: diffBlock });
+        // For write_file/edit_file, extract and push the diff block (defensively)
+        try {
+          if ((toolName === "write_file" || toolName === "edit_file") && result instanceof ToolMessage) {
+            const content = result.content;
+            if (typeof content === "string" && content.includes("```diff")) {
+              const diffStart = content.indexOf("```diff");
+              const diffEnd = content.indexOf("```", diffStart + 6) + 3;
+              if (diffEnd > diffStart) {
+                const diffBlock = content.substring(diffStart, diffEnd);
+                w.stream.push({ workerId, kind: "tool", tool: toolName, text: diffBlock });
+              }
             }
           }
+          // Fall back to nothing if result is not ToolMessage or extraction fails
+        } catch {
+          // Silently fall back; diff extraction errors never block the tool call
         }
 
         return result;
@@ -1272,26 +1283,32 @@ export class Subagents {
   private makeToolBrief(toolName: string, args: Record<string, unknown>): string {
     const briefParts: string[] = [];
     
-    if (toolName === "read_file" || toolName === "glob_files" || toolName === "search_contents") {
-      if (args.path) briefParts.push(`${args.path}`);
-      if (args.pattern && toolName === "search_contents") briefParts.push(`pattern: ${args.pattern}`);
-    } else if (toolName === "write_file" || toolName === "edit_file") {
-      if (args.path) briefParts.push(`${args.path}`);
-    } else if (toolName === "execute_command") {
-      if (args.command) briefParts.push(`${args.command}`);
-    } else if (toolName === "web_fetch" || toolName === "web_search") {
-      if (args.url) briefParts.push(`${args.url}`);
-      if (args.query) briefParts.push(`${args.query}`);
-    } else {
-      // Generic: list all non-empty string/number values
-      for (const [, val] of Object.entries(args)) {
-        if (typeof val === "string" || typeof val === "number") {
-          briefParts.push(`${val}`);
-        }
+    // Format: search_contents "<pattern>  in <path>", glob_files "<pattern>", read_file "<path>", execute_command "<command>"
+    if (toolName === "search_contents") {
+      const pattern = String(args.pattern ?? "");
+      const path = String(args.path ?? "");
+      if (pattern && path) {
+        briefParts.push(`${pattern}  in ${path}`);
+      } else if (pattern) {
+        briefParts.push(pattern);
+      } else if (path) {
+        briefParts.push(path);
       }
+    } else if (toolName === "glob_files") {
+      if (args.pattern) briefParts.push(String(args.pattern));
+    } else if (toolName === "read_file") {
+      if (args.path) briefParts.push(String(args.path));
+    } else if (toolName === "write_file" || toolName === "edit_file") {
+      if (args.path) briefParts.push(String(args.path));
+    } else if (toolName === "execute_command") {
+      if (args.command) briefParts.push(String(args.command));
+    } else if (toolName === "web_fetch" || toolName === "web_search") {
+      if (args.url) briefParts.push(String(args.url));
+      if (args.query) briefParts.push(String(args.query));
     }
+    // Note: generic branch removed to avoid dumping every value
 
-    let brief = briefParts.join(" / ").replace(/\n/g, " ");
+    let brief = briefParts.join(" ").replace(/[\x00-\x1f\x7f\n\r]/g, " ");
     if (brief.length > 120) {
       brief = brief.substring(0, 117) + "…";
     }
