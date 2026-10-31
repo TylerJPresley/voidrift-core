@@ -13,7 +13,13 @@
  * network, no real git.
  */
 import { describe, it, expect, beforeEach } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
+import { BaseChatModel, type BaseChatModelParams } from "@langchain/core/language_models/chat_models";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
+import type { ChatResult } from "@langchain/core/outputs";
+import { hermeticTmp } from "../test-hermetic.js";
 import { Guardian, builtinGuardrails, type GuardedCall } from "../entities/guardian.js";
 import { Warden, loadPolicy } from "../entities/warden.js";
 import { EventBus } from "../entities/event-bus.js";
@@ -22,7 +28,7 @@ import type { MergeResult, VcsPort, Worktree } from "../entities/ports/vcs-port.
 import type { StagingApplyResult, StagingArea, StagingPort } from "../entities/ports/staging-port.js";
 import { newManifest, stageEntry, upsertEntry, checkApply, type StagingManifest } from "../entities/staging-manifest.js";
 import { Subagents, type SubagentsDeps } from "./subagents.js";
-import type { AgentDefinition } from "../entities/subagents.js";
+import type { AgentDefinition, WorkerStreamEvent } from "../entities/subagents.js";
 import { ToolRegistry } from "../entities/tool-registry.js";
 import { builtinToolDefinitions } from "../tools/builtin.js";
 
@@ -869,57 +875,198 @@ describe("Subagents — AgentDefinition.model is a STRING endpoint key (invarian
   });
 });
 
-describe("Subagents — worker stream carries tool names, diffs, summary (§7.2, §6.3)", () => {
-  it("tool events carry tool names from WorkerStreamEvent interface", () => {
-    // Structural test: verify WorkerStreamEvent has tool field
-    const event: any = {
-      workerId: "w1",
-      kind: "tool",
-      tool: "read_file",
-      text: "example.txt",
-    };
-    expect(event.tool).toBe("read_file");
-    expect(event.text).toBeDefined();
-  });
 
-  it("stream with 100+ events shows the tail fit for display (§6.3 scrollable)", () => {
-    // Verify the stream can hold many events and AgentMonitor will show tail only
-    const stream: any[] = [];
-    
-    // Push 150 events (exceeds typical display pane of 20 lines)
-    for (let i = 0; i < 150; i++) {
-      stream.push({
-        workerId: "test",
-        kind: "tool",
-        tool: `tool_${i}`,
-        text: `event ${i}`,
-      });
+
+/**
+ * §7.2/§6.3/§14.6 — the worker's LIVE stream drives the real code: a scripted
+ * worker runs READ/SEARCH/EDIT tool calls through the SAME invokeAgent path and
+ * its `workerToolStatusMiddleware` pushes the stream events (tool names, briefs,
+ * the real edit diff, the final summary) and fires WORKER_STATUS_CHANGED per
+ * tool call. Only the model is faked; the real tool backend edits a hermeticTmp
+ * file and `edit_file` returns the real `diff` fence.
+ */
+describe("Subagents — worker stream drives the real code (§7.2, §6.3, §14.6)", () => {
+  /**
+   * A scripted worker model that, on each worker call, drives the next tool in
+   * the sequence read_file → search_contents → edit_file, then answers "done".
+   * The reviewer uses a SEPARATE `reviewerModel`, so this never sees the review.
+   * The step is tracked by COUNTING the tool-call rounds already in the history
+   * (one AIMessage with tool_calls per completed round), so no shared mutable
+   * sequence index leaks across workers.
+   */
+  class ScriptedToolModel extends BaseChatModel {
+    private seq: number;
+    constructor(params: BaseChatModelParams = {}) {
+      super(params);
+      this.seq = 0;
     }
-    
-    // Verify the stream grows unbounded
-    expect(stream.length).toBe(150);
-    
-    // Verify tail extraction (as done in AgentMonitor)
-    const MAX_VISIBLE_LINES = 20;
-    const tailStart = Math.max(0, stream.length - MAX_VISIBLE_LINES);
-    const tail = stream.slice(tailStart);
-    expect(tail.length).toBe(20);
-    expect(tail[0]?.tool).toBe("tool_130");
+    _llmType(): string {
+      return "scripted-tool";
+    }
+    override bindTools(): this {
+      return this;
+    }
+    async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+      // The tool round = the number of prior assistant messages that CALLED a
+      // tool (each adds one AIMessage with tool_calls to the history).
+      const priorToolRounds = messages.filter(
+        (m) => m instanceof AIMessage && (m.tool_calls?.length ?? 0) > 0,
+      ).length;
+      const call = (name: string, args: Record<string, unknown>): ChatResult => {
+        const msg = new AIMessage({
+          content: "",
+          tool_calls: [{ name, args, id: `c${name}-${this.seq++}` }],
+        });
+        return { generations: [{ text: "", message: msg }] };
+      };
+      if (priorToolRounds === 0) return call("read_file", { path: "README.md" });
+      if (priorToolRounds === 1) return call("search_contents", { pattern: "hello", path: "README.md" });
+      if (priorToolRounds === 2) return call("edit_file", { path: "README.md", search: "hello", replace: "goodbye" });
+      const msg = new AIMessage("done: edited README.md");
+      return { generations: [{ text: "done: edited README.md", message: msg }] };
+    }
+  }
+
+  /** A model that NEVER answers — always calls read_file — so the worker hits
+   * its tool-round budget (`limit_reached`). */
+  class NeverStopToolModel extends BaseChatModel {
+    private seq = 0;
+    constructor(params: BaseChatModelParams = {}) {
+      super(params);
+    }
+    _llmType(): string {
+      return "never-stop-tool";
+    }
+    override bindTools(): this {
+      return this;
+    }
+    async _generate(): Promise<ChatResult> {
+      const msg = new AIMessage({
+        content: "still reading",
+        tool_calls: [{ name: "read_file", args: { path: "README.md" }, id: `c${this.seq++}` }],
+      });
+      return { generations: [{ text: "", message: msg }] };
+    }
+  }
+
+  /** A model that THROWS on invoke — the worker ends `failed`. */
+  class ThrowingModel extends BaseChatModel {
+    constructor(params: BaseChatModelParams = {}) {
+      super(params);
+    }
+    _llmType(): string {
+      return "throwing";
+    }
+    override bindTools(): this {
+      return this;
+    }
+    async _generate(): Promise<ChatResult> {
+      throw new Error("model exploded");
+    }
+  }
+
+  function reviewerPass() {
+    return new FakeListChatModel({ responses: ["PASS: looks good"] });
+  }
+
+  const streamAgent: AgentDefinition = {
+    name: "streamer",
+    description: "reads, searches, edits",
+    systemPrompt: "do the work",
+    // write+shell → runs in place against the workspace root (no repo, no
+    // worktree, no staging), so the real tool backend edits the hermeticTmp file.
+    tools: ["read_file", "search_contents", "edit_file", "execute_command"],
+  };
+
+  let ws: string;
+  beforeEach(() => {
+    ws = hermeticTmp("subagents-stream");
+    fs.writeFileSync(path.join(ws, "README.md"), "hello world\nsecond line\n");
   });
 
-  it("verifies makeToolBrief spec: search_contents pattern  in path, glob pattern, read path, execute command", () => {
-    // This is verified via actual execution in subagents.section7.test
-    // Here we just verify the structure is correct
-    const briefs = {
-      search_contents_full: "test  in file.txt",
-      search_contents_pattern: "test",
-      glob: "*.ts",
-      read: "README.md",
-      execute: "npm test",
-    };
-    
-    expect(briefs.search_contents_full).toContain("test");
-    expect(briefs.search_contents_full).toContain("in");
-    expect(briefs.search_contents_full).toContain("file.txt");
+  it("the stream carries exactly one running status, the real tool briefs, the real edit diff, and ONE final summary", async () => {
+    const vcs = new FakeVcs();
+    vcs.repo = false; // no repo → in-place run at the workspace root
+    const bus = new EventBus();
+    const toolEvents: { tool?: string; status?: string }[] = [];
+    bus.subscribe("WORKER_STATUS_CHANGED", (e) => {
+      const p = e.payload as { status: string; tool?: string };
+      toolEvents.push({ status: p.status, ...(p.tool ? { tool: p.tool } : {}) });
+    });
+    const sa = new Subagents(
+      makeDeps({ vcs, bus, chatModel: new ScriptedToolModel(), reviewerModel: reviewerPass(), workspaceRoot: ws }),
+    );
+    sa.register(streamAgent);
+
+    const result = await sa.dispatch([{ agent: "streamer", task: "edit README" }]);
+    const workerId = result.workers[0]!.workerId;
+    const stream: WorkerStreamEvent[] = sa.stream(workerId);
+
+    // Exactly one `status: running` event (the initial transition), no second one.
+    const runningStatuses = stream.filter((e) => e.kind === "status" && e.status === "running");
+    expect(runningStatuses).toHaveLength(1);
+
+    // Tool events in call order, carrying the real makeToolBrief briefs.
+    const toolCalls = stream.filter((e) => e.kind === "tool" && !(e.text ?? "").startsWith("```diff"));
+    const read = toolCalls.find((e) => e.tool === "read_file");
+    const search = toolCalls.find((e) => e.tool === "search_contents");
+    const edit = toolCalls.find((e) => e.tool === "edit_file");
+    expect(read?.text).toBe("README.md");
+    expect(search?.text).toBe("hello  in README.md");
+    expect(edit?.text).toBe("README.md");
+
+    // A diff event for edit_file: a real ```diff fence carrying the +/- lines.
+    const diff = stream.find((e) => e.kind === "tool" && (e.text ?? "").startsWith("```diff"));
+    expect(diff).toBeDefined();
+    expect(diff!.text).toContain("-hello world");
+    expect(diff!.text).toContain("+goodbye world");
+
+    // Exactly ONE summary event, and it is LAST.
+    const summaries = stream.filter((e) => e.kind === "summary");
+    expect(summaries).toHaveLength(1);
+    expect(stream[stream.length - 1]!.kind).toBe("summary");
+
+    // WORKER_STATUS_CHANGED fired per tool call carrying `tool`.
+    const toolBus = toolEvents.filter((e) => e.tool !== undefined).map((e) => e.tool);
+    expect(toolBus).toEqual(expect.arrayContaining(["read_file", "search_contents", "edit_file"]));
+
+    // The real edit landed on disk (the real backend ran, not a stub).
+    expect(fs.readFileSync(path.join(ws, "README.md"), "utf8")).toContain("goodbye world");
+  });
+
+  it("a worker that never stops calling tools ends with exactly ONE summary event (limit_reached)", async () => {
+    const vcs = new FakeVcs();
+    vcs.repo = false;
+    const sa = new Subagents(
+      makeDeps({
+        vcs,
+        chatModel: new NeverStopToolModel(),
+        reviewerModel: reviewerPass(),
+        workspaceRoot: ws,
+        getConfig: () => cfg({ turnMaxToolRounds: 2 }),
+      }),
+    );
+    sa.register(streamAgent);
+    const result = await sa.dispatch([{ agent: "streamer", task: "read forever" }]);
+    const workerId = result.workers[0]!.workerId;
+    expect(result.workers[0]!.status).toBe("limit_reached");
+    const stream = sa.stream(workerId);
+    expect(stream.filter((e) => e.kind === "summary")).toHaveLength(1);
+    expect(stream[stream.length - 1]!.kind).toBe("summary");
+  });
+
+  it("a worker whose model throws ends failed with exactly ONE summary event", async () => {
+    const vcs = new FakeVcs();
+    vcs.repo = false;
+    const sa = new Subagents(
+      makeDeps({ vcs, chatModel: new ThrowingModel(), reviewerModel: reviewerPass(), workspaceRoot: ws }),
+    );
+    sa.register(streamAgent);
+    const result = await sa.dispatch([{ agent: "streamer", task: "boom" }]);
+    const workerId = result.workers[0]!.workerId;
+    expect(result.workers[0]!.status).toBe("failed");
+    const stream = sa.stream(workerId);
+    expect(stream.filter((e) => e.kind === "summary")).toHaveLength(1);
+    expect(stream[stream.length - 1]!.kind).toBe("summary");
   });
 });

@@ -322,6 +322,10 @@ interface LiveWorker {
   recoveryBranch?: string;
   pendingApproval: boolean;
   stream: WorkerStreamEvent[];
+  /** §7.2 — true once the one terminal summary stream event has been pushed, so
+   * `finishWorker` is idempotent across the chained return paths (one summary
+   * per worker, always last). */
+  summaryEmitted?: boolean;
   /** The batch task id this worker ran (§7.2 batch form), or undefined for a
    * direct single dispatch with no per-request id. */
   taskId?: string;
@@ -1273,8 +1277,12 @@ export class Subagents {
     return createMiddleware(spec as Parameters<typeof createMiddleware>[0]);
   }
 
-  /** Push the summary stream event and return the worker (§7.2). */
+  /** Push the ONE terminal summary stream event and return the worker (§7.2).
+   * Idempotent: the result-shaping return paths chain through this helper, so
+   * the summary is pushed exactly once per worker (always the last event). */
   private finishWorker(w: LiveWorker): LiveWorker {
+    if (w.summaryEmitted) return w;
+    w.summaryEmitted = true;
     w.stream.push({ workerId: w.workerId, kind: "summary", text: w.summary || "" });
     return w;
   }
@@ -1497,7 +1505,7 @@ export class Subagents {
       { session: this.ownerSessionId(), worker: workerId },
     );
     w.stream.push({ workerId, kind: "status", status: w.status });
-          return this.finishWorker(w);
+    return w;
   }
 
   private transition(w: LiveWorker, status: WorkerStatus, tool?: string): void {
