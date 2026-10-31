@@ -83,10 +83,12 @@ export interface WorkerInfo {
   taskId?: string;
 }
 
-/** One live stream event for a worker, keyed by worker id (§7.2). */
+/** One live stream event for a worker, keyed by worker id (§7.2). An `error`
+ * event carries the first line of a refused or failed tool call's error text, so
+ * a denied call does not read as executed. */
 export interface WorkerStreamEvent {
   workerId: string;
-  kind: "status" | "tool" | "summary";
+  kind: "status" | "tool" | "summary" | "error";
   status?: WorkerStatus;
   tool?: string;
   text?: string;

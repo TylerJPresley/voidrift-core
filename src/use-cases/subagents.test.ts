@@ -949,6 +949,39 @@ describe("Subagents — worker stream drives the real code (§7.2, §6.3, §14.6
     }
   }
 
+  /**
+   * A scripted model that first reads README.md (a normal, successful call that
+   * MUST NOT produce an error event), then calls `execute_command shutdown now`
+   * — a hard-deny the guardian refuses with `permission denied: …` — then
+   * answers "done". Drives the real decision point so the denial is the real
+   * `ToolMessage { status: "error" }`, never a literal the test builds.
+   */
+  class DenyingToolModel extends BaseChatModel {
+    private seq = 0;
+    constructor(params: BaseChatModelParams = {}) {
+      super(params);
+    }
+    _llmType(): string {
+      return "denying-tool";
+    }
+    override bindTools(): this {
+      return this;
+    }
+    async _generate(messages: BaseMessage[]): Promise<ChatResult> {
+      const priorToolRounds = messages.filter(
+        (m) => m instanceof AIMessage && (m.tool_calls?.length ?? 0) > 0,
+      ).length;
+      const call = (name: string, args: Record<string, unknown>): ChatResult => {
+        const msg = new AIMessage({ content: "", tool_calls: [{ name, args, id: `c${name}-${this.seq++}` }] });
+        return { generations: [{ text: "", message: msg }] };
+      };
+      if (priorToolRounds === 0) return call("read_file", { path: "README.md" });
+      if (priorToolRounds === 1) return call("execute_command", { command: "shutdown now" });
+      const msg = new AIMessage("done: tried a denied command");
+      return { generations: [{ text: "done", message: msg }] };
+    }
+  }
+
   /** A model that THROWS on invoke — the worker ends `failed`. */
   class ThrowingModel extends BaseChatModel {
     constructor(params: BaseChatModelParams = {}) {
@@ -1032,6 +1065,34 @@ describe("Subagents — worker stream drives the real code (§7.2, §6.3, §14.6
 
     // The real edit landed on disk (the real backend ran, not a stub).
     expect(fs.readFileSync(path.join(ws, "README.md"), "utf8")).toContain("goodbye world");
+  });
+
+  it("a worker call the guardian refuses adds an `error` event right after its tool call; a successful call adds none (§7.2)", async () => {
+    const vcs = new FakeVcs();
+    vcs.repo = false; // in-place run at the workspace root
+    const sa = new Subagents(
+      makeDeps({ vcs, chatModel: new DenyingToolModel(), reviewerModel: reviewerPass(), workspaceRoot: ws }),
+    );
+    sa.register(streamAgent);
+
+    const result = await sa.dispatch([{ agent: "streamer", task: "try a denied command" }]);
+    const workerId = result.workers[0]!.workerId;
+    const stream: WorkerStreamEvent[] = sa.stream(workerId);
+
+    // The successful read_file call produced NO error event.
+    const readIdx = stream.findIndex((e) => e.kind === "tool" && e.tool === "read_file");
+    expect(readIdx).toBeGreaterThanOrEqual(0);
+    expect(stream[readIdx + 1]!.kind).not.toBe("error");
+
+    // The denied execute_command call is immediately followed by an `error`
+    // event carrying the real guardian reason — [..., tool(call), error(...)].
+    const callIdx = stream.findIndex((e) => e.kind === "tool" && e.tool === "execute_command");
+    expect(callIdx).toBeGreaterThanOrEqual(0);
+    const errEvent = stream[callIdx + 1]!;
+    expect(errEvent.kind).toBe("error");
+    expect(errEvent.text).toContain("permission denied");
+    // Exactly one error event (the one denied call), and it is not the summary.
+    expect(stream.filter((e) => e.kind === "error")).toHaveLength(1);
   });
 
   it("a worker that never stops calling tools ends with exactly ONE summary event (limit_reached)", async () => {

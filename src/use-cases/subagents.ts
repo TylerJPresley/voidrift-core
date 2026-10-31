@@ -1247,13 +1247,26 @@ export class Subagents {
         const brief = this.makeToolBrief(toolName, request.toolCall.args ?? {});
         w.stream.push({ workerId, kind: "tool", tool: toolName, text: brief });
 
-        // Call the handler and capture result
+        // Call the handler and capture result. §7.2 — a refused or failed call
+        // adds an `error` event carrying the first line of its error text, so a
+        // denied call does not read as executed. The real denial path (the §9.1
+        // decision point, the next middleware in the chain) RETURNS a
+        // `ToolMessage { status: "error" }` (e.g. "permission denied: …"); the
+        // throw branch is defensive for a handler that rejects instead. The push
+        // never throws into the tool call.
         let result: unknown;
         try {
           result = await handler(request);
         } catch (err) {
-          // Stream push never throws into the tool call; error propagates after event is recorded
+          const raw = err instanceof Error ? err.message : String(err);
+          const text = this.clipLine(raw.split("\n", 1)[0] ?? raw);
+          if (text) w.stream.push({ workerId, kind: "error", text });
           throw err;
+        }
+        if (result instanceof ToolMessage && result.status === "error") {
+          const content = typeof result.content === "string" ? result.content : String(result.content);
+          const text = this.clipLine(content.split("\n", 1)[0] ?? content);
+          if (text) w.stream.push({ workerId, kind: "error", text });
         }
 
         // For write_file/edit_file, extract and push the diff block (defensively)
@@ -1319,11 +1332,19 @@ export class Subagents {
     }
     // Note: generic branch removed to avoid dumping every value
 
-    let brief = briefParts.join(" ").replace(/[\x00-\x1f\x7f\n\r]/g, " ");
-    if (brief.length > 120) {
-      brief = brief.substring(0, 117) + "…";
+    let brief = briefParts.join(" ");
+    return this.clipLine(brief) || `${toolName}`;
+  }
+
+  /** The ONE clip used by the worker stream: strip control chars and newlines,
+   * take the first line, clip ~120 chars with an ellipsis. Reused by the tool
+   * brief and the refused/failed error event so there is no second clip site. */
+  private clipLine(text: string): string {
+    let line = text.replace(/[\x00-\x1f\x7f\n\r]/g, " ").trim();
+    if (line.length > 120) {
+      line = line.substring(0, 117) + "…";
     }
-    return brief || `${toolName}`;
+    return line;
   }
 
   /**
