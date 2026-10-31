@@ -325,3 +325,67 @@ describe("Subagents batch fan-out — parallel start, dependency ordering (§7.2
     expect(byId.get("b")!.summary).toMatch(/dependency "a"/);
   });
 });
+
+/** §7.2: EVERY worker ends its live stream with exactly one `summary` event,
+ * including the batch early-exit branches that settle a worker without ever
+ * dispatching it (a failed dependency → skipped, an already-fired cancel →
+ * aborted). `finishWorker` is idempotent, so the count is exactly one. */
+describe("Subagents batch fan-out — every settled worker ends its stream with one summary event (§7.2)", () => {
+  const summariesOf = (events: ReturnType<Subagents["stream"]>): string[] =>
+    events.filter((e) => e.kind === "summary").map((e) => e.text ?? "");
+
+  it("a skipped dependent (its dependency failed) ends its stream with exactly one summary event carrying the skip text", async () => {
+    const vcs = new FakeVcs();
+    const probe = new Probe();
+    const models: Record<string, BaseChatModel> = {
+      "ep-bad": new FakeListChatModel({ responses: [] }), // throws → worker fails
+      "ep-ok": new DelayModel(probe, 10, "ok-summary"),
+    };
+    const sa = new Subagents(makeDeps({ vcs, resolveModel: (k) => models[k] }));
+    sa.register({ ...reader, name: "bad", model: "ep-bad" });
+    sa.register({ ...reader, name: "ok", model: "ep-ok" });
+
+    const result = await sa.dispatch([
+      { id: "a", agent: "bad", task: "will fail" },
+      { id: "b", agent: "ok", task: "dependent", dependsOn: ["a"] },
+    ]);
+
+    const dependent = result.workers.find((w) => w.taskId === "b")!;
+    expect(dependent.status).toBe("skipped");
+    const summaries = summariesOf(sa.stream(dependent.workerId));
+    expect(summaries).toHaveLength(1); // exactly one summary event, like every other path
+    expect(summaries[0]).toMatch(/skipped: dependency "a"/);
+  });
+
+  it("a task aborted before it starts ends its stream with exactly one summary event (empty text allowed)", async () => {
+    const vcs = new FakeVcs();
+    const bus = new EventBus();
+    const probe = new Probe();
+    const model = new DelayModel(probe, 10, "never-runs");
+    const sa = new Subagents(makeDeps({ vcs, bus, resolveModel: () => model }));
+    sa.register({ ...reader, name: "r", model: "ep" });
+
+    // Cancel the fanout the instant it starts, before any task's dependency wait
+    // resolves, so the FIRST task sees `signal.aborted` and takes the
+    // already-aborted early-exit branch (never dispatched).
+    let fanoutId = "";
+    bus.subscribe("FANOUT_STARTED", (e) => {
+      fanoutId = (e.payload as { fanoutId: string }).fanoutId;
+      sa.cancel(fanoutId);
+    });
+
+    const result = await sa.dispatch([{ id: "a", agent: "r", task: "aborted before start" }]);
+
+    const w = result.workers.find((x) => x.taskId === "a")!;
+    expect(w.status).toBe("aborted"); // took the already-aborted branch, no dispatch
+    expect(probe.briefs).toHaveLength(0); // the model never generated
+    const summaries = summariesOf(sa.stream(w.workerId));
+    expect(summaries).toHaveLength(1); // the summary event is still pushed…
+    expect(summaries[0]).toBe(""); // …with empty text (no summary was set)
+  });
+
+  // NOT covered here: the over-cap dependency-summary deny branch (`w.summary =
+  // "failed: …"`). The existing batch harness builds no oversize-dependency-
+  // summary scenario; the finishWorker fix is applied to that branch identically,
+  // but no test in this file drives it.
+});

@@ -654,6 +654,7 @@ export class Subagents {
         const w = this.newWorker(fanoutId, req.agent, req.id);
         w.summary = `skipped: dependency "${failedDep}" did not complete`;
         this.transition(w, "skipped");
+        this.finishWorker(w); // §7.2: end the stream with exactly one summary event.
         outcomes.set(key, { done: true, ok: false, worker: w });
         out.push(w);
         return;
@@ -662,6 +663,7 @@ export class Subagents {
       if (signal.aborted) {
         const w = this.newWorker(fanoutId, req.agent, req.id);
         this.transition(w, "aborted");
+        this.finishWorker(w); // §7.2: end the stream with exactly one summary event.
         outcomes.set(key, { done: true, ok: false, worker: w });
         out.push(w);
         return;
@@ -675,6 +677,7 @@ export class Subagents {
         const w = this.newWorker(fanoutId, req.agent, req.id);
         w.summary = `failed: ${prefixed.deny}`;
         this.transition(w, "failed");
+        this.finishWorker(w); // §7.2: end the stream with exactly one summary event.
         outcomes.set(key, { done: true, ok: false, worker: w });
         out.push(w);
         return;
